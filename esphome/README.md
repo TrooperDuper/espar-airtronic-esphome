@@ -127,3 +127,39 @@ The heater hardware always receives a fixed high setpoint (default 85°F, config
 | 26 | CAN RX |
 | 27 | CAN TX |
 | 4 | WS2812 LED data |
+
+---
+
+## Common pitfalls
+
+**Heater won't start heating even with mode set to HEAT**
+
+The most likely cause is a temperature unit mismatch. The component's thermostat logic operates in Celsius internally. If your HA cabin temperature sensor reports in Fahrenheit, the raw value flows in as-is — so `44.9°F` is treated as `44.9°C` (113°F), which is already above any reasonable setpoint, and the thermostat correctly decides not to heat.
+
+Check your ESPHome logs for a line like:
+```
+Current Temperature: 44.95°C  Target Temperature: 21.00°C  Action: IDLE
+```
+If the current temperature looks implausibly high, your sensor is reporting in °F. Uncomment the conversion filter in `espar-heater.yaml`:
+```yaml
+filters:
+  - filter_out: nan
+  - lambda: return (x - 32.0f) * 5.0f / 9.0f;   # °F → °C
+```
+
+**Climate entity not appearing in Home Assistant**
+
+Make sure the `espar_can:` block in your YAML includes a `name:` field:
+```yaml
+espar_can:
+  id: espar
+  name: "Espar Heater"   # ← required for HA discovery
+```
+
+**"Heartbeat lost" messages appearing every 60–90 seconds**
+
+The heater occasionally gaps its 0x625 heartbeat by more than the timeout threshold. This is expected behavior — the component reconnects automatically within 100ms. If the messages are more frequent or the component does not recover, check CAN H/L wiring and confirm the level shifter is powered.
+
+**OTA flash fails after changing framework type**
+
+ESPHome cannot OTA from `esp-idf` to `arduino` framework (or vice versa). If you change the framework type you must flash via USB. Connect the WeAct via USB-C and run `esphome run espar-heater.yaml` from your computer.
