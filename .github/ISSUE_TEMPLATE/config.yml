@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Protocol reference
+    url: https://github.com/TrooperDuper/espar-airtronic-esphome/blob/main/docs/protocol-reference.md
+    about: Decoded CAN frames and payload details
+  - name: Hardware setup
+    url: https://github.com/TrooperDuper/espar-airtronic-esphome/blob/main/docs/hardware-setup.md
+    about: Wiring and connector guide
