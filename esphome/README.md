@@ -158,7 +158,7 @@ espar_can:
 
 **"Heartbeat lost" messages appearing every 60–90 seconds**
 
-The heater occasionally gaps its 0x625 heartbeat by more than the timeout threshold. This is expected behavior — the component reconnects automatically within 100ms. If the messages are more frequent or the component does not recover, check CAN H/L wiring and confirm the level shifter is powered.
+The heater occasionally gaps its 0x625 heartbeat by more than the timeout threshold. This is expected behavior — the component reconnects automatically within 100ms. If the messages are more frequent or the component does not recover, check CAN H/L wiring and connections at the XB10 harness tap.
 
 **OTA flash fails after changing framework type**
 

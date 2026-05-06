@@ -5,7 +5,6 @@
 | Component | Details | Link |
 |---|---|---|
 | **WeAct CAN485 V1.0** | ESP32 development board with onboard CAN transceiver and USB-C | [GitHub](https://github.com/WeActStudio/WeActStudio.CAN485DevBoardV1_ESP32/tree/master) |
-| **Logic level shifter** | 3.3V ↔ 5V bidirectional — required between ESP32 and heater CAN bus | Generic (available from most electronics suppliers) |
 | **Molex MicroFit 3.0 dual-row connector** | For tapping the XB10 heater harness connector without cutting wires | Molex PN varies by pin count; search "MicroFit 3.0 dual row" |
 | **Twisted pair wire** | CAN H/L should be a twisted pair to reduce noise; 22–24 AWG | Standard |
 | **120Ω resistor** | Only needed if this controller is the final node on the bus — most installations tap mid-bus and do **not** need termination | — |
@@ -19,7 +18,7 @@ The WeAct CAN485 board has an onboard 120Ω CAN bus termination resistor control
 - **Leave K3 OFF** when tapping an existing CAN bus (the heater and OEM controller already provide termination)
 - Turn K3 ON only if the WeAct is the only device on the bus and you need end-of-line termination
 
-The onboard CAN transceiver is a 5V device with 3.3V-compatible logic levels. A logic level shifter between the ESP32 GPIO pins and the transceiver is required to avoid damage and ensure clean signal levels.
+The onboard CAN transceiver handles the conversion between the ESP32's 3.3V logic and the CAN bus differential signaling (CANH/CANL). No external level shifter is needed — connect CANH and CANL directly from the heater harness to the WeAct's CAN H/L terminals.
 
 ---
 
@@ -52,11 +51,9 @@ The heater harness uses a **Molex MicroFit 3.0 dual-row** connector at the XB10 
 ```
 Heater harness XB10
   Pin 7 (CAN H) ──┐
-  Pin 8 (CAN L) ──┤──── Level shifter (5V side) ──── Level shifter (3.3V side) ──── WeAct GPIO26/27
-  Pin 2 (GND)   ──┘                                                                   WeAct GND
+  Pin 8 (CAN L) ──┤──── WeAct CAN H/L terminals (onboard transceiver handles signaling)
+  Pin 2 (GND)   ──┘──── WeAct GND
 ```
-
-The level shifter's LV reference ties to WeAct 3.3V; HV reference ties to the heater bus 5V (or a local 5V supply).
 
 ---
 
