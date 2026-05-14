@@ -62,11 +62,16 @@ static constexpr uint32_t STATUS_BURST_INTV_MS   =   150;
 static constexpr uint8_t  STATUS_BURST_COUNT      =     4;
 
 // ── Safety thresholds ────────────────────────────────────────────────────
-static constexpr uint32_t HEARTBEAT_TIMEOUT_MS  = 10000;  // loss of 0x625 (heater occasionally gaps >5s)
+// Two-stage heartbeat loss: TIMEOUT triggers a grace period; GRACE is the
+// additional wait before actually declaring the heater offline.  This
+// eliminates spurious "heartbeat lost" events caused by the heater's
+// occasional >10s gaps between 0x625 frames.
+static constexpr uint32_t HEARTBEAT_TIMEOUT_MS  = 10000;  // ms without 0x625 → start grace
+static constexpr uint32_t HEARTBEAT_GRACE_MS    =  5000;  // additional ms before declaring offline
 static constexpr uint32_t STARTUP_TIMEOUT_MS    = 90000;  // stuck in STARTUP state
 static constexpr uint32_t HEAT_CONFIRM_MS       = 30000;  // HEAT cmd but no HEATING state
 static constexpr uint8_t  MAX_FAILED_STARTS     =    10;  // → lockout
-static constexpr float    HYSTERESIS_C          =  0.3f;  // thermostat dead-band
+static constexpr float    HYSTERESIS_C          =  1.0f;  // thermostat dead-band (°C)
 
 // ── GPIO ─────────────────────────────────────────────────────────────────
 static constexpr gpio_num_t CAN_TX_PIN = GPIO_NUM_27;
@@ -87,11 +92,19 @@ class EsparCanComponent : public climate::Climate, public Component {
 
   // ── Setters called from generated __init__.py code ────────────────────
   void set_heat_setpoint_f(float f)                         { heat_setpoint_f_ = f; }
+  void set_cabin_temp_fahrenheit(bool f)                    { cabin_temp_fahrenheit_ = f; }
+  void set_pause_mode_fan(bool f)                           { pause_mode_fan_ = f; }
   void set_current_temperature_sensor(sensor::Sensor *s);
   void set_heater_state_sensor(text_sensor::TextSensor *s)  { heater_state_sensor_ = s; }
   void set_flame_sensor(binary_sensor::BinarySensor *s)     { flame_sensor_ = s; }
   void set_connected_sensor(binary_sensor::BinarySensor *s) { connected_sensor_ = s; }
   void set_fault_sensor(text_sensor::TextSensor *s)         { fault_sensor_ = s; }
+
+  // ── Runtime controls (callable from YAML lambdas) ─────────────────────
+  // Suspend all outbound CAN frames without disconnecting the component.
+  // Use before connecting OEM diagnostic tools to avoid P000342.
+  // Resuming automatically re-triggers the CAN handshake.
+  void set_tx_standby(bool active);
 
  protected:
   // ── TX helpers ────────────────────────────────────────────────────────
@@ -133,6 +146,15 @@ class EsparCanComponent : public climate::Climate, public Component {
   // decides to heat.  Our logic controls on/off; the heater's internal
   // thermocouple just acts as a safety ceiling.
   float heat_setpoint_f_{85.0f};
+  // When true, incoming cabin temperature values are converted °F→°C before
+  // the thermostat comparison.  Set via cabin_temp_unit: fahrenheit in YAML.
+  bool  cabin_temp_fahrenheit_{false};
+  // When true, transition to FAN_ONLY (pseudo-pause) instead of IDLE when
+  // the cabin reaches the setpoint.  Set via pause_mode: fan in YAML.
+  bool  pause_mode_fan_{false};
+  // When true, all outbound CAN frames are suppressed.  Toggled at runtime
+  // via set_tx_standby() / the "Espar CAN Standby" template switch in YAML.
+  bool  tx_standby_{false};
 
   // ── CAN state ────────────────────────────────────────────────────────
   uint16_t heater_ctr_{0xFFFE};   // counter echoed from 0x2C4 D5/D6
@@ -165,7 +187,10 @@ class EsparCanComponent : public climate::Climate, public Component {
   uint8_t  failed_start_count_{0};
   bool     locked_out_{false};
   bool     waiting_heat_confirm_{false};
-  uint32_t heat_cmd_ms_{0};          // when we last transitioned to cmd_heating=true
+  uint32_t heat_cmd_ms_{0};           // when we last transitioned to cmd_heating=true
+  // Two-stage heartbeat loss detection
+  bool     disconnect_pending_{false};
+  uint32_t disconnect_pending_ms_{0};
 };
 
 }  // namespace espar_can

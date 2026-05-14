@@ -1,0 +1,14 @@
+# ESPHome secrets — never commit real credentials
+secrets.yaml
+esphome/secrets.yaml
+
+# ESPHome build artifacts
+.esphome/
+build/
+
+# IDE / OS
+.vscode/
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db

@@ -10,25 +10,27 @@
 #    Onboard 120Ω termination switch K3 — leave OFF when tapping mid-bus
 #
 #  Climate entity behaviour:
-#    HEAT mode  — sends HEAT:85°F to heater hardware; thermostat uses the
+#    HEAT mode  — sends HEAT:85°F to heater hardware; our thermostat uses the
 #                 averaged cabin sensor to turn the heater on/off around the
-#                 user's target setpoint. The heater's internal thermocouple
+#                 user's target setpoint.  The heater's internal thermocouple
 #                 acts only as a safety ceiling.
 #    FAN ONLY   — sends FAN command; heater runs blower, no combustion.
 #                 Expect ~75s cooldown fan-run after transitioning to OFF.
 #    OFF        — sends IDLE command.
 #
 #  Prerequisites in Home Assistant:
-#    Create a template sensor that averages your cabin temperature sensors:
+#    Create a template sensor that averages your cabin temperature sensors.
+#    The unit (°F or °C) must match the cabin_temp_unit setting below.
 #
 #      template:
 #        - sensor:
 #            - name: "Cabin Average Temperature"
-#              unit_of_measurement: "°C"
+#              unit_of_measurement: "°F"       # or "°C" — must match cabin_temp_unit
 #              device_class: temperature
 #              state: >
 #                {{ ( states('sensor.sensor_a') | float(0)
-#                   + states('sensor.sensor_b') | float(0) ) / 2 }}
+#                   + states('sensor.sensor_b') | float(0)
+#                   + states('sensor.sensor_c') | float(0) ) / 3 }}
 #
 #    Then set entity_id below to match.
 # =============================================================================
@@ -63,9 +65,11 @@ wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
 
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
   ap:
     ssid: "Espar-Heater Fallback Hotspot"
     password: !secret fallback_hotspot_password
+
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 # Use DEBUG during development to see CAN frame activity.
@@ -80,7 +84,8 @@ external_components:
       path: components
     components: [espar_can]
 
-# ── Captive Portal ────────────────────────────────────────────────────────────
+# ── Captive Portal ────────────────────────────────────────────────────────
+
 captive_portal:
 
 # ── Sensors ───────────────────────────────────────────────────────────────────
@@ -93,12 +98,10 @@ sensor:
     unit_of_measurement: "°F"
     filters:
       - filter_out: nan                            # ignore unavailable readings
-      # If your HA sensor reports in °F, keep the line below to convert to °C
-      # so the thermostat setpoint (shown in HA as °C) works correctly.
-      # Comment it out if your HA sensor already reports in °C.
-      - lambda: return (x - 32.0f) * 5.0f / 9.0f;   # °F → °C
+      # No °F→°C lambda needed — cabin_temp_unit: fahrenheit handles conversion
+      # internally in the component.
 
-  # WiFi signal — useful for placement decisions
+  # WiFi signal — useful for placement decisions in the Trooper
   - platform: wifi_signal
     name: "Espar Node WiFi Signal"
     update_interval: 60s
@@ -109,9 +112,20 @@ espar_can:
   name: "Espar Heater"
 
   # Fixed setpoint (°F) sent to the heater hardware when our thermostat
-  # decides to heat. Set high so the heater runs continuously; our logic
+  # decides to heat.  Set high so the heater runs continuously; our logic
   # (cabin avg vs. HA climate setpoint) is what turns the heater on and off.
   heat_setpoint_f: 85.0
+
+  # Unit of the cabin temperature sensor above.
+  # "fahrenheit" — component converts °F→°C internally; no lambda filter needed.
+  # "celsius"    — value passed through unchanged (default).
+  cabin_temp_unit: fahrenheit
+
+  # Behaviour when the cabin reaches the target setpoint.
+  # "off" — send IDLE; heater does full ~4-min cooldown on every cycle (default).
+  # "fan" — send FAN_ONLY; blower keeps running without combustion (pseudo-pause
+  #          mode, ~4W continuous).  Avoids repeated full stop/start cycles.
+  pause_mode: "off"   # must be quoted — bare off/on are YAML booleans
 
   # Sensor that provides current cabin temperature to the climate entity.
   # Remove this line if you have no temperature sensor — the component will
@@ -216,6 +230,23 @@ button:
   - platform: restart
     name: "Restart Espar Controller"
     icon: mdi:restart
+
+# ── CAN standby switch ────────────────────────────────────────────────────────
+# Suspends all outbound CAN frames without physically unplugging the WeAct.
+# Use before connecting the EasyStart Pro or any OEM diagnostic tool to avoid
+# triggering fault P000342 (too many CAN controllers).
+# Resuming automatically re-runs the CAN handshake.
+switch:
+  - platform: template
+    name: "Espar CAN Standby"
+    id: espar_standby
+    icon: mdi:pause-circle-outline
+    restore_mode: ALWAYS_OFF
+    optimistic: true
+    turn_on_action:
+      - lambda: id(espar).set_tx_standby(true);
+    turn_off_action:
+      - lambda: id(espar).set_tx_standby(false);
 
 # ── Web dashboard (optional — remove to save ~40 KB flash) ───────────────────
 web_server:

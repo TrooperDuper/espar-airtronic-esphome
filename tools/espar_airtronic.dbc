@@ -1,0 +1,107 @@
+VERSION ""
+
+NS_ :
+
+BS_:
+
+BU_: HEATER CONTROLLER
+
+// =============================================================================
+//  Espar Airtronic S3 — CAN database
+//
+//  Captured on: Espar Airtronic S3 B2L Gasoline 12V
+//  Bus speed:   500 kbps
+//  Frame type:  Standard (11-bit) only
+//
+//  Node assignments:
+//    HEATER     — the Airtronic S3 control box (transmits 0x625, 0x2C4, 0x2C5, 0x2C6)
+//    CONTROLLER — the WeAct CAN485 running espar_can component (transmits 0x54–0x57, 0x60D, 0x65)
+//
+//  Signal encoding notes:
+//    HeaterState  — raw D1 byte; see BO_ 708 comment for state map
+//    FlameActive  — single bit at D2[5] (bit 5 of byte index 2)
+//    Counter_HB   — D5/D6 little-endian uint16; echoed by controller in 0x54 D5/D6
+//    CommandMode  — D2 value: 0x00=IDLE  0x02=FAN  0x05=HEAT
+//    SetpointRaw  — D3/D4 LE uint16; value = round((°F-32)*50/9)
+//                   Verified: 66°F→0xBD  75°F→0xEF  78°F→0x100  80°F→0x10B
+//    AliveToggle  — D2 alternates 0x00/0x10 each heartbeat frame
+// =============================================================================
+
+// ── HEATER → CONTROLLER ──────────────────────────────────────────────────────
+
+BO_ 1573 Heater_Heartbeat: 8 HEATER
+ SG_ AliveToggle : 8|8@1+ (1,0) [0|0] "" CONTROLLER
+ // D1 (byte 0) = 0x25 constant, meaning unknown
+ // D3 = slow session counter (increments across power cycles)
+ // D4-D8 = static bytes (86 01 54 5C 06 on captured unit)
+
+BO_ 708 Heater_PrimaryStatus: 8 HEATER
+ SG_ HeaterState   : 0|8@1+  (1,0) [0|0]   "" CONTROLLER
+ SG_ FlameActive   : 21|1@1+ (1,0) [0|1]   "" CONTROLLER
+ SG_ Counter_HB    : 32|16@1+(1,0) [0|65535] "" CONTROLLER
+ // HeaterState D1 values:
+ //   0x02 = STARTUP  (also stuck-startup fault if > 90s)
+ //   0x03 = IDLE
+ //   0x09 = HEATING
+ //   0x21 = FAN (blower-only / cooldown)
+ // FlameActive: bit 5 of byte 2 (D3 in 1-indexed notation)
+ // Counter_HB:  D5/D6 little-endian; echoed in 0x54 command frames
+
+BO_ 709 Heater_SecondaryStatus: 8 HEATER
+ // All bytes observed as 0x00 in captures; signals not yet decoded
+ SG_ SecStatus_Raw : 0|64@1+ (1,0) [0|0] "" CONTROLLER
+
+BO_ 710 Heater_Data: 8 HEATER
+ // First observed payload: 32 00 7C 01 00 00 00 00 (static)
+ SG_ HeaterData_Raw : 0|64@1+ (1,0) [0|0] "" CONTROLLER
+
+// ── CONTROLLER → HEATER ──────────────────────────────────────────────────────
+
+BO_ 84 Ctrl_Command: 8 CONTROLLER
+ SG_ CommandEnable  : 0|8@1+  (1,0) [0|1]     "" HEATER
+ SG_ CommandMode    : 8|8@1+  (1,0) [0|5]     "" HEATER
+ SG_ SetpointRaw    : 16|16@1+(1,0) [0|65535]  "" HEATER
+ SG_ Counter_Echo   : 32|16@1+(1,0) [0|65535]  "" HEATER
+ // CommandEnable: 0x00=disabled  0x01=enabled
+ // CommandMode:   0x00=IDLE  0x02=FAN  0x05=HEAT
+ // SetpointRaw:   little-endian; see encoding note above
+ // Counter_Echo:  D5/D6 — echoes Counter_HB from 0x2C4; D7/D8 always 0x00
+
+BO_ 85 Ctrl_ConfigA: 8 CONTROLLER
+ SG_ ConfigA_Raw : 0|64@1+ (1,0) [0|0] "" HEATER
+ // Fixed payload: 10 27 00 00 00 00 00 00
+
+BO_ 86 Ctrl_ConfigB: 8 CONTROLLER
+ SG_ ConfigB_Raw : 0|64@1+ (1,0) [0|0] "" HEATER
+ // Fixed payload: 10 27 00 00 00 00 00 00
+
+BO_ 87 Ctrl_ConfigC: 8 CONTROLLER
+ SG_ ConfigC_Raw : 0|64@1+ (1,0) [0|0] "" HEATER
+ // Fixed payload: 00 00 FE FF FE FF 00 00
+
+BO_ 1549 Ctrl_Heartbeat: 8 CONTROLLER
+ SG_ HB_Raw : 0|64@1+ (1,0) [0|0] "" HEATER
+ // Fixed payload: 0D 10 82 B6 09 20 70 00 (sent every 100ms)
+
+BO_ 101 Ctrl_StatusBurst: 8 CONTROLLER
+ SG_ StatusSeq : 16|8@1+ (1,0) [1|3] "" HEATER
+ // D3 cycles 01→02→03 across 4-frame burst sent every ~10s
+ // D1/D2 and D4-D8 static within burst
+
+// ── VALUE DESCRIPTIONS ────────────────────────────────────────────────────────
+
+VAL_ 708 HeaterState
+ 2 "STARTUP"
+ 3 "IDLE"
+ 9 "HEATING"
+ 33 "FAN" ;
+
+VAL_ 84 CommandMode
+ 0 "IDLE"
+ 2 "FAN"
+ 5 "HEAT" ;
+
+VAL_ 84 CommandEnable
+ 0 "DISABLED"
+ 1 "ENABLED" ;
+

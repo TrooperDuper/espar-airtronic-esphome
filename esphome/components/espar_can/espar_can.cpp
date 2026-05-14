@@ -72,7 +72,7 @@ void EsparCanComponent::loop() {
   handle_rx_();
 
   // ── Init burst retry until heater acks ──────────────────────────────
-  if (!heater_connected_ && (now - t_init_last_) >= INIT_RESEND_MS) {
+  if (!heater_connected_ && !tx_standby_ && (now - t_init_last_) >= INIT_RESEND_MS) {
     send_init_burst_();
     t_init_last_ = now;
   }
@@ -92,13 +92,26 @@ void EsparCanComponent::loop() {
   // ── 0x65 status burst @ 10s ─────────────────────────────────────────
   handle_status_burst_(now);
 
-  // ── Heartbeat timeout: heater went offline ────────────────────────────
+  // ── Two-stage heartbeat loss detection ───────────────────────────────
+  // Stage 1: after HEARTBEAT_TIMEOUT_MS without 0x625 → start grace period.
+  // Stage 2: after HEARTBEAT_GRACE_MS of continued silence → declare offline.
+  // This eliminates spurious disconnects from the heater's occasional >10s
+  // gaps between heartbeat frames during internal state transitions.
   if (heater_connected_ && (now - heater_last_seen_) > HEARTBEAT_TIMEOUT_MS) {
-    heater_connected_ = false;
-    heater_ctr_       = 0xFFFE;
-    ESP_LOGW(TAG, "Heater heartbeat lost — waiting for reconnect");
-    if (connected_sensor_) connected_sensor_->publish_state(false);
-    publish_fault_("Heartbeat lost");
+    if (!disconnect_pending_) {
+      disconnect_pending_    = true;
+      disconnect_pending_ms_ = now;
+      ESP_LOGD(TAG, "Heartbeat late (%ums) — grace period started",
+               (unsigned)(now - heater_last_seen_));
+    } else if ((now - disconnect_pending_ms_) >= HEARTBEAT_GRACE_MS) {
+      disconnect_pending_ = false;
+      heater_connected_   = false;
+      heater_ctr_         = 0xFFFE;
+      t_init_last_        = 0;  // resume init burst retries immediately
+      ESP_LOGW(TAG, "Heater heartbeat lost — waiting for reconnect");
+      if (connected_sensor_) connected_sensor_->publish_state(false);
+      publish_fault_("Heartbeat lost");
+    }
   }
 
   // ── Behavioral: stuck in STARTUP too long → failed start ─────────────
@@ -189,7 +202,11 @@ void EsparCanComponent::set_current_temperature_sensor(sensor::Sensor *s) {
   current_temp_sensor_ = s;
   s->add_on_state_callback([this](float val) {
     if (!std::isnan(val)) {
-      this->current_temperature = val;
+      // Convert °F → °C if cabin_temp_unit: fahrenheit is set in YAML.
+      // This replaces the need for a lambda filter on the HA sensor block.
+      this->current_temperature = cabin_temp_fahrenheit_
+          ? (val - 32.0f) * 5.0f / 9.0f
+          : val;
       evaluate_thermostat_();
       this->publish_state();
     }
@@ -223,8 +240,16 @@ void EsparCanComponent::evaluate_thermostat_() {
         // Below setpoint minus hysteresis → start heating
         apply_mode_(true, false);
       } else if (cur >= tgt) {
-        // At or above setpoint → go idle (heater fan cools combustion chamber)
-        apply_mode_(false, false);
+        // At or above setpoint.
+        // pause_mode: fan  → FAN_ONLY (pseudo-pause, blower keeps running,
+        //                    no combustion, avoids full stop/start cycle).
+        // pause_mode: off  → IDLE (full shutdown, 4-min cooldown + glow-plug
+        //                    clean on every cycle — default behaviour).
+        if (pause_mode_fan_) {
+          apply_mode_(false, true);
+        } else {
+          apply_mode_(false, false);
+        }
       }
       // Within hysteresis band → maintain current command state (no change)
       break;
@@ -336,7 +361,8 @@ void EsparCanComponent::handle_rx_() {
           // Heater heartbeat — update timestamp FIRST so the timeout check
           // in loop() never sees a stale value even if publish_state() callbacks
           // re-enter loop logic synchronously.
-          heater_last_seen_ = millis();
+          heater_last_seen_   = millis();
+          disconnect_pending_ = false;  // clear any pending grace-period disconnect
           if (!heater_connected_) {
             heater_connected_   = true;
             failed_start_count_ = 0;   // fresh connection resets failure counter
@@ -493,6 +519,7 @@ void EsparCanComponent::send_init_burst_() {
 
 // Controller alive heartbeat — sent every 100ms
 void EsparCanComponent::send_heartbeat_() {
+  if (tx_standby_) return;
   static const uint8_t d[] = {0x0D,0x10,0x82,0xB6,0x09,0x20,0x70,0x00};
   send_frame_(0x60D, d, 8);
 }
@@ -500,6 +527,7 @@ void EsparCanComponent::send_heartbeat_() {
 // Primary command group — sent every 200ms
 // 0x54 payload encodes mode and setpoint; 0x55/56/57 are static config
 void EsparCanComponent::send_command_group_() {
+  if (tx_standby_) return;
   uint8_t ctr_lo = static_cast<uint8_t>(heater_ctr_ & 0xFF);
   uint8_t ctr_hi = static_cast<uint8_t>((heater_ctr_ >> 8) & 0xFF);
 
@@ -574,6 +602,27 @@ void EsparCanComponent::handle_status_burst_(uint32_t now) {
 void EsparCanComponent::publish_fault_(const std::string &msg) {
   ESP_LOGW(TAG, "Fault: %s", msg.c_str());
   if (fault_sensor_) fault_sensor_->publish_state(msg);
+}
+
+// Suspend or resume all outbound CAN frames.
+// Use before connecting OEM diagnostic tools (EasyStart Pro / EasyScan)
+// to prevent P000342 ("too many CAN controllers").
+// Resuming clears heater_connected_ so the init burst handshake re-runs.
+void EsparCanComponent::set_tx_standby(bool active) {
+  if (active == tx_standby_) return;
+  tx_standby_ = active;
+  if (active) {
+    ESP_LOGI(TAG, "TX standby ON — all outbound frames suspended");
+    publish_fault_("TX standby: safe to connect OEM tool");
+  } else {
+    ESP_LOGI(TAG, "TX standby OFF — resuming, re-running CAN handshake");
+    // Force re-handshake so the heater knows we're back
+    heater_connected_   = false;
+    disconnect_pending_ = false;
+    t_init_last_        = 0;   // fire init burst on next loop tick
+    if (connected_sensor_) connected_sensor_->publish_state(false);
+    if (fault_sensor_)     fault_sensor_->publish_state("OK");
+  }
 }
 
 void EsparCanComponent::dump_config() {
