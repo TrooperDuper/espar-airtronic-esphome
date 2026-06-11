@@ -81,21 +81,24 @@ Full ESPHome setup: [esphome/README.md](esphome/README.md)
 
 ```
 espar-airtronic-esphome/
+├── ESPAR_CAN_Signal_Map.md     # Decoded signal reference — all frames, states, fault codes
+├── ESPAR_CAN_Fault_Analysis.md # Fault capture analysis — methodology and frame-by-frame decode
 ├── docs/
 │   ├── protocol-reference.md   # All decoded CAN frames, payloads, encoding
 │   ├── hardware-setup.md       # Wiring, connectors, pinout
-│   └── fault-codes.md          # P-code table + RE methodology for fault frames
+│   └── fault-codes.md          # P-code table + confirmed D3 fault codes + remaining capture targets
 ├── captures/
 │   ├── README.md               # How captures were taken, equipment, settings
 │   ├── normal-operation/       # All RE phase captures, renamed descriptively
 │   ├── easystart-pro-session/  # Full 71k-frame EasyStart Pro session (split)
-│   └── fault-codes/            # Outlet obstruction + fuel line pinch captures
+│   └── fault-codes/            # Outlet obstruction + fuel line pinch captures (two confirmed)
 ├── esphome/
 │   ├── espar-heater.yaml       # Ready-to-use ESPHome config
 │   └── components/espar_can/   # External component source
 ├── arduino/
-│   ├── CAN_CSV_WeAct.ino       # Full controller sketch (HEAT/FAN/OFF + serial)
-│   └── CAN_CSV_WeAct_Listen.ino # Passive listen-only sketch for captures
+│   ├── CAN_CSV_WeAct.ino           # Full controller sketch (HEAT/FAN/OFF + serial)
+│   ├── CAN_CSV_WeAct_Listen.ino    # Passive listen-only sketch for captures
+│   └── ESPAR_CAN_Tester_WeAct.ino  # WeAct DevBoard test sketch with fault detection
 └── tools/
     └── decode.py               # CSV annotation + SavvyCAN format converter
 ```

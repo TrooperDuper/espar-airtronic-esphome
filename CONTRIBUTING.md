@@ -7,7 +7,7 @@ Thanks for stopping by. This project started as a one-person reverse engineering
 ## Ways to contribute
 
 **High value right now:**
-- Fault frame captures — trigger a specific fault (see [docs/fault-codes.md](docs/fault-codes.md)) with SavvyCAN running and share the CSV
+- Fault captures for remaining unknown D3 bits — two fault types are confirmed (`0x20` flame loss, `0x40` overtemp) but bits 0–4 and bit 7 of D3 have never been observed non-zero. Trigger a glow plug, metering pump, burner motor, or sensor fault with SavvyCAN running and share the CSV. See [docs/fault-codes.md](docs/fault-codes.md) for the prioritized target list.
 - Testing on other variants (D2L diesel, S2, older S3 revisions) — the protocol may differ
 - Testing with other CAN hardware (MCP2515, Canable, etc.)
 

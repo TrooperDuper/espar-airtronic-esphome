@@ -1,21 +1,30 @@
 # Fault Code Captures
 
-## Status: Empty — contributions needed
+## Status: Two captures analyzed — remaining D3 bits still needed
 
-This directory will hold CAN captures taken while deliberately triggering specific heater faults. These captures are needed to decode the fault frame IDs and payload structure — the P-code numbers are known from the service manual but the CAN representation has not yet been captured.
+Two fault captures have been taken and decoded:
+
+| File | Fault triggered | D1 | D3 | Result |
+|---|---|---|---|---|
+| `Espar CAN-Bus outlet obstruction.csv` | Exhaust outlet blocked | `0x0B` | `0x40` | Overtemperature / exhaust blocked confirmed |
+| `Espar CAN-Bus fuel line pinched.csv` | Fuel line pinched | `0x0B` | `0x20` | Flame loss / fuel starvation confirmed |
+
+These captures confirmed `0x2C4 D1=0x0B` as the fault state and established the D3 fault code byte. Full analysis in `ESPAR_CAN_Fault_Analysis.md` (repo root).
+
+**Still needed:** Captures for the remaining D3 bit positions (bits 0–4, bit 7). See [docs/fault-codes.md](../../docs/fault-codes.md) for the prioritized capture target list.
 
 ## How to contribute
 
 See [docs/fault-codes.md](../../docs/fault-codes.md) for:
-- The full P-code reference table
-- A prioritized list of faults to capture
+- The confirmed D3 fault code table and what's still unknown
+- A prioritized list of faults to capture next
 - The exact capture procedure
 - What to look for in the resulting CSV
 
 When submitting a fault capture, name the file descriptively and include in your PR:
 - Which fault was triggered and how
 - Heater model/variant
-- Timestamp of the fault event within the capture (so reviewers know where to look)
+- The D3 value observed in 0x2C4 during the fault
 
 ## Naming convention
 

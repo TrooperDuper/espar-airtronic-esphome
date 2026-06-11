@@ -6,6 +6,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.1.0] — 2026-06-11
+
+### Added
+- CAN-native fault state decoded: `0x2C4 D1=0x0B` confirmed as active fault state via two controlled captures
+- D3 fault code byte confirmed: `0x20` = flame loss / fuel starvation, `0x40` = overtemperature / exhaust blocked
+- ESPHome component (`espar_can`) updated to detect and name CAN fault codes in real time
+- Arduino tester sketch (`ESPAR_CAN_Tester_WeAct.ino`) — full controller sketch for the WeAct CAN485 DevBoard V1 with fault detection, auto-idle on fault, `f` command for fault status query
+- `ESPAR_CAN_Fault_Analysis.md` — full narrative analysis of both fault captures with frame-by-frame decode
+- `ESPAR_CAN_Signal_Map.md` — updated signal map with fault state, D3 fault codes, D2 sub-states, and fault path in state diagram
+
+### Changed
+- `espar_can.h` / `espar_can.cpp` — fault detection updated from behavioral-only to CAN-native: reads D1=0x0B and D3 fault code, publishes named fault string (`FAULT:FLAME_LOSS`, `FAULT:OVERTEMP`)
+- `docs/fault-codes.md` — updated status from "behavioral detection only" to reflect decoded fault state; Phase 2 section now documents confirmed D3 values; capture plan refocused on remaining unknown D3 bits
+- `captures/fault-codes/README.md` — updated from empty placeholder to reflect two analyzed captures and remaining capture targets
+
+### Fixed
+- `arduino/ESPAR_CAN_Tester_WeAct.ino` — corrected bus speed from 250 kbps to 500 kbps to match confirmed protocol
+
+---
+
 ## [1.0.0] — 2026-05-06
 
 Initial public release.
@@ -33,5 +53,5 @@ Initial public release.
 - Full init burst sequence (0x5C–0x10A)
 
 ### Known gaps
-- Fault frame CAN IDs not yet decoded
+- Remaining D3 fault code bits (bits 0–4, bit 7) not yet captured
 - Only tested on Airtronic S3 B2L Gasoline 12V
