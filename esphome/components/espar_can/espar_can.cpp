@@ -189,6 +189,10 @@ void EsparCanComponent::set_current_temperature_sensor(sensor::Sensor *s) {
   current_temp_sensor_ = s;
   s->add_on_state_callback([this](float val) {
     if (!std::isnan(val)) {
+      // Convert to °C for the thermostat comparison (ESPHome climate always uses °C internally).
+      // cabin_temp_fahrenheit_ is set true when cabin_temp_unit: fahrenheit in YAML.
+      if (cabin_temp_fahrenheit_)
+        val = (val - 32.0f) * 5.0f / 9.0f;
       this->current_temperature = val;
       evaluate_thermostat_();
       this->publish_state();
@@ -223,8 +227,10 @@ void EsparCanComponent::evaluate_thermostat_() {
         // Below setpoint minus hysteresis → start heating
         apply_mode_(true, false);
       } else if (cur >= tgt) {
-        // At or above setpoint → go idle (heater fan cools combustion chamber)
-        apply_mode_(false, false);
+        // At or above setpoint → pause or idle depending on pause_mode config.
+        // pause_mode_fan_=true: stay in FAN_ONLY (blower keeps running, no combustion).
+        // pause_mode_fan_=false (default): send IDLE (full ~4-min cooldown cycle).
+        apply_mode_(false, pause_mode_fan_);
       }
       // Within hysteresis band → maintain current command state (no change)
       break;
@@ -492,12 +498,35 @@ void EsparCanComponent::on_unexpected_id_(const twai_message_t &msg) {
 // =============================================================================
 
 void EsparCanComponent::send_frame_(uint32_t id, const uint8_t *data, uint8_t len, bool ext) {
+  if (tx_standby_) return;  // CAN TX suspended — OEM tool may be connected
   twai_message_t msg = {};
   msg.identifier       = id;
   msg.extd             = ext ? 1 : 0;
   msg.data_length_code = len;
   for (int i = 0; i < len && i < 8; i++) msg.data[i] = data[i];
   twai_transmit(&msg, pdMS_TO_TICKS(5));
+}
+
+// Called from YAML switch lambda (Espar CAN Standby).
+// Suspending TX allows OEM EasyStart Pro / EasyScan to connect without
+// triggering fault P000342 (too many CAN controllers).
+// Resuming triggers a fresh init burst to re-establish the handshake.
+void EsparCanComponent::set_tx_standby(bool s) {
+  if (s == tx_standby_) return;
+  tx_standby_ = s;
+  if (s) {
+    ESP_LOGI(TAG, "CAN TX standby ON — all outbound frames suspended");
+    // Drop command state so we re-sync cleanly on resume
+    cmd_heating_      = false;
+    cmd_fan_          = false;
+  } else {
+    ESP_LOGI(TAG, "CAN TX standby OFF — re-running init burst");
+    // Re-establish connection with the heater
+    heater_connected_ = false;
+    heater_ctr_       = 0xFFFE;
+    init_done_        = false;
+    t_init_last_      = millis() - INIT_RESEND_MS;  // fire immediately next loop
+  }
 }
 
 // Init burst — sent at startup and repeated every 150ms until heater responds.
@@ -623,6 +652,8 @@ void EsparCanComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "Espar Airtronic S3 CAN Controller:");
   ESP_LOGCONFIG(TAG, "  CAN TX: GPIO%d  RX: GPIO%d  500 kbps", CAN_TX_PIN, CAN_RX_PIN);
   ESP_LOGCONFIG(TAG, "  Heat setpoint to heater: %.0f°F", heat_setpoint_f_);
+  ESP_LOGCONFIG(TAG, "  Cabin temp unit: %s", cabin_temp_fahrenheit_ ? "fahrenheit (converting °F→°C)" : "celsius (passthrough)");
+  ESP_LOGCONFIG(TAG, "  Pause mode: %s", pause_mode_fan_ ? "fan (FAN_ONLY at setpoint)" : "off (IDLE at setpoint)");
   ESP_LOGCONFIG(TAG, "  Thermostat hysteresis: %.1f°C", HYSTERESIS_C);
   LOG_TEXT_SENSOR("  ",    "Heater State",     heater_state_sensor_);
   LOG_BINARY_SENSOR("  ",  "Flame Active",     flame_sensor_);

@@ -95,6 +95,9 @@ class EsparCanComponent : public climate::Climate, public Component {
 
   // ── Setters called from generated __init__.py code ────────────────────
   void set_heat_setpoint_f(float f)                         { heat_setpoint_f_ = f; }
+  void set_cabin_temp_fahrenheit(bool f)                    { cabin_temp_fahrenheit_ = f; }
+  void set_pause_mode_fan(bool f)                           { pause_mode_fan_ = f; }
+  void set_tx_standby(bool s);
   void set_current_temperature_sensor(sensor::Sensor *s);
   void set_heater_state_sensor(text_sensor::TextSensor *s)  { heater_state_sensor_ = s; }
   void set_flame_sensor(binary_sensor::BinarySensor *s)     { flame_sensor_ = s; }
@@ -141,6 +144,15 @@ class EsparCanComponent : public climate::Climate, public Component {
   // decides to heat.  Our logic controls on/off; the heater's internal
   // thermocouple just acts as a safety ceiling.
   float heat_setpoint_f_{85.0f};
+  // When true, the cabin temperature sensor value is in °F and will be
+  // converted to °C internally before the thermostat comparison.
+  bool  cabin_temp_fahrenheit_{false};
+  // When true, send FAN_ONLY instead of IDLE when cabin reaches setpoint.
+  // Avoids repeated full stop/start cycles; blower runs ~4W continuous.
+  bool  pause_mode_fan_{false};
+  // When true, all outbound CAN frames are suppressed (TX standby).
+  // Use before connecting OEM EasyStart Pro to avoid P000342.
+  bool  tx_standby_{false};
 
   // ── CAN state ────────────────────────────────────────────────────────
   uint16_t heater_ctr_{0xFFFE};        // counter echoed from 0x2C4 D5/D6
