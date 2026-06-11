@@ -72,7 +72,7 @@
 //  and the problem was TX collision. Re-comment and re-flash to
 //  restore normal control mode.
 //
-//  WeAct troubleshooting: LEAVE COMMENTED OUT for WROOM + SN65HVD230 build.
+//  Leave commented out for normal operation.
 // ============================================================
 // #define DIAG_LISTEN_ONLY
 
