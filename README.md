@@ -41,12 +41,12 @@ This repository documents everything collected along the way — every raw captu
 - ✅ Flame confirmation sensor
 - ✅ Temperature setpoint encoding confirmed at 66°F, 75°F, 78°F, and 80°F
 - ✅ Behavioral fault detection (failed starts, heartbeat loss, lockout)
+- ✅ CAN fault state decoded — `0x2C4 D1=0x0B` with named fault codes (flame loss, overtemperature)
 - ✅ WS2812 RGB LED status indicator
 - ✅ ESPHome external component — drop-in, no custom firmware needed
 
 ## What's still open
 
-- ⚠️ Fault frame CAN IDs not yet decoded (P-codes known from service manual; capture methodology documented)
 - ⚠️ Only tested on Airtronic S3 B2L Gasoline 12V — diesel and other variants untested
 - ⚠️ Boot sync requires heater power and ESP32 to start together (see [known issues](#known-issues))
 
@@ -89,7 +89,7 @@ espar-airtronic-esphome/
 │   ├── README.md               # How captures were taken, equipment, settings
 │   ├── normal-operation/       # All RE phase captures, renamed descriptively
 │   ├── easystart-pro-session/  # Full 71k-frame EasyStart Pro session (split)
-│   └── fault-codes/            # Placeholder — contributions welcome
+│   └── fault-codes/            # Outlet obstruction + fuel line pinch captures
 ├── esphome/
 │   ├── espar-heater.yaml       # Ready-to-use ESPHome config
 │   └── components/espar_can/   # External component source
@@ -111,7 +111,7 @@ espar-airtronic-esphome/
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). The highest-value contributions right now are fault frame captures (triggering specific faults with SavvyCAN running) and testing on heater variants other than the B2L Gasoline.
+See [CONTRIBUTING.md](CONTRIBUTING.md). The highest-value contributions right now are testing on heater variants other than the B2L Gasoline, and additional fault captures to identify remaining D3 fault code bits (low voltage, ignition failure, sensor disconnect).
 
 ---
 
