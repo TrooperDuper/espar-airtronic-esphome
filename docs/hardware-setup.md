@@ -71,11 +71,19 @@ Wire colors confirmed against the OEM technical description wiring diagram (sect
 
 ## Wiring diagram (text)
 
+Tap at the XB10 (heater side) or the EasyStart Pro connector (controller side) — your choice:
+
 ```
-Heater harness XB10
-  Pin 7 (CAN H) ──┐
-  Pin 8 (CAN L) ──┤──── WeAct CAN H/L terminals (onboard transceiver handles signaling)
-  Pin 2 (GND)   ──┘──── WeAct GND
+Option A — XB10 heater connector (10-pin)
+  Pin 7  GY/BU (CAN H) ──┐
+  Pin 8  GN/YE (CAN L) ──┤──── WeAct CAN H/L terminals
+  Pin 2  BR/BK (GND)   ──┘──── WeAct GND
+
+Option B — EasyStart Pro connector (4-pin)
+  BU/RD  (CAN H) ──┐
+  BU/BK  (CAN L) ──┤──── WeAct CAN H/L terminals
+  BN     (GND)   ──┘──── WeAct GND
+  RD     (+12V)  ────── (optional — use for WeAct power if needed)
 ```
 
 ---
