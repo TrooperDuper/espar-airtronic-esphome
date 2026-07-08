@@ -41,12 +41,12 @@ This repository documents everything collected along the way — every raw captu
 - ✅ Flame confirmation sensor
 - ✅ Temperature setpoint encoding confirmed at 66°F, 75°F, 78°F, and 80°F
 - ✅ Behavioral fault detection (failed starts, heartbeat loss, lockout)
+- ✅ CAN fault state decoded — `0x2C4 D1=0x0B` with named fault codes (flame loss, overtemperature)
 - ✅ WS2812 RGB LED status indicator
 - ✅ ESPHome external component — drop-in, no custom firmware needed
 
 ## What's still open
 
-- ⚠️ Fault frame CAN IDs not yet decoded (P-codes known from service manual; capture methodology documented)
 - ⚠️ Only tested on Airtronic S3 B2L Gasoline 12V — diesel and other variants untested
 - ⚠️ Boot sync requires heater power and ESP32 to start together (see [known issues](#known-issues))
 
@@ -67,8 +67,6 @@ You can tap CAN H/L at either connector — both are on the same bus:
 
 Wire colors vary by harness revision. See [docs/hardware-setup.md](docs/hardware-setup.md) for full pinout tables for both connectors.
 
-Full wiring and pinout details: [docs/hardware-setup.md](docs/hardware-setup.md)
-
 ---
 
 ## Quick start
@@ -87,21 +85,24 @@ Full ESPHome setup: [esphome/README.md](esphome/README.md)
 
 ```
 espar-airtronic-esphome/
+├── ESPAR_CAN_Signal_Map.md     # Decoded signal reference — all frames, states, fault codes
+├── ESPAR_CAN_Fault_Analysis.md # Fault capture analysis — methodology and frame-by-frame decode
 ├── docs/
 │   ├── protocol-reference.md   # All decoded CAN frames, payloads, encoding
 │   ├── hardware-setup.md       # Wiring, connectors, pinout
-│   └── fault-codes.md          # P-code table + RE methodology for fault frames
+│   └── fault-codes.md          # P-code table + confirmed D3 fault codes + remaining capture targets
 ├── captures/
 │   ├── README.md               # How captures were taken, equipment, settings
 │   ├── normal-operation/       # All RE phase captures, renamed descriptively
 │   ├── easystart-pro-session/  # Full 71k-frame EasyStart Pro session (split)
-│   └── fault-codes/            # Placeholder — contributions welcome
+│   └── fault-codes/            # Outlet obstruction + fuel line pinch captures (two confirmed)
 ├── esphome/
 │   ├── espar-heater.yaml       # Ready-to-use ESPHome config
 │   └── components/espar_can/   # External component source
 ├── arduino/
-│   ├── CAN_CSV_WeAct.ino       # Full controller sketch (HEAT/FAN/OFF + serial)
-│   └── CAN_CSV_WeAct_Listen.ino # Passive listen-only sketch for captures
+│   ├── CAN_CSV_WeAct.ino           # Full controller sketch (HEAT/FAN/OFF + serial)
+│   ├── CAN_CSV_WeAct_Listen.ino    # Passive listen-only sketch for captures
+│   └── ESPAR_CAN_Tester_WeAct.ino  # WeAct DevBoard test sketch with fault detection
 └── tools/
     └── decode.py               # CSV annotation + SavvyCAN format converter
 ```
@@ -117,7 +118,7 @@ espar-airtronic-esphome/
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). The highest-value contributions right now are fault frame captures (triggering specific faults with SavvyCAN running) and testing on heater variants other than the B2L Gasoline.
+See [CONTRIBUTING.md](CONTRIBUTING.md). The highest-value contributions right now are testing on heater variants other than the B2L Gasoline, and additional fault captures to identify remaining D3 fault code bits (low voltage, ignition failure, sensor disconnect).
 
 ---
 

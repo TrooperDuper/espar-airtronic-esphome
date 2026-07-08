@@ -72,7 +72,7 @@ void EsparCanComponent::loop() {
   handle_rx_();
 
   // ── Init burst retry until heater acks ──────────────────────────────
-  if (!heater_connected_ && !tx_standby_ && (now - t_init_last_) >= INIT_RESEND_MS) {
+  if (!heater_connected_ && (now - t_init_last_) >= INIT_RESEND_MS) {
     send_init_burst_();
     t_init_last_ = now;
   }
@@ -92,26 +92,13 @@ void EsparCanComponent::loop() {
   // ── 0x65 status burst @ 10s ─────────────────────────────────────────
   handle_status_burst_(now);
 
-  // ── Two-stage heartbeat loss detection ───────────────────────────────
-  // Stage 1: after HEARTBEAT_TIMEOUT_MS without 0x625 → start grace period.
-  // Stage 2: after HEARTBEAT_GRACE_MS of continued silence → declare offline.
-  // This eliminates spurious disconnects from the heater's occasional >10s
-  // gaps between heartbeat frames during internal state transitions.
+  // ── Heartbeat timeout: heater went offline ────────────────────────────
   if (heater_connected_ && (now - heater_last_seen_) > HEARTBEAT_TIMEOUT_MS) {
-    if (!disconnect_pending_) {
-      disconnect_pending_    = true;
-      disconnect_pending_ms_ = now;
-      ESP_LOGD(TAG, "Heartbeat late (%ums) — grace period started",
-               (unsigned)(now - heater_last_seen_));
-    } else if ((now - disconnect_pending_ms_) >= HEARTBEAT_GRACE_MS) {
-      disconnect_pending_ = false;
-      heater_connected_   = false;
-      heater_ctr_         = 0xFFFE;
-      t_init_last_        = 0;  // resume init burst retries immediately
-      ESP_LOGW(TAG, "Heater heartbeat lost — waiting for reconnect");
-      if (connected_sensor_) connected_sensor_->publish_state(false);
-      publish_fault_("Heartbeat lost");
-    }
+    heater_connected_ = false;
+    heater_ctr_       = 0xFFFE;
+    ESP_LOGW(TAG, "Heater heartbeat lost — waiting for reconnect");
+    if (connected_sensor_) connected_sensor_->publish_state(false);
+    publish_fault_("Heartbeat lost");
   }
 
   // ── Behavioral: stuck in STARTUP too long → failed start ─────────────
@@ -202,11 +189,11 @@ void EsparCanComponent::set_current_temperature_sensor(sensor::Sensor *s) {
   current_temp_sensor_ = s;
   s->add_on_state_callback([this](float val) {
     if (!std::isnan(val)) {
-      // Convert °F → °C if cabin_temp_unit: fahrenheit is set in YAML.
-      // This replaces the need for a lambda filter on the HA sensor block.
-      this->current_temperature = cabin_temp_fahrenheit_
-          ? (val - 32.0f) * 5.0f / 9.0f
-          : val;
+      // Convert to °C for the thermostat comparison (ESPHome climate always uses °C internally).
+      // cabin_temp_fahrenheit_ is set true when cabin_temp_unit: fahrenheit in YAML.
+      if (cabin_temp_fahrenheit_)
+        val = (val - 32.0f) * 5.0f / 9.0f;
+      this->current_temperature = val;
       evaluate_thermostat_();
       this->publish_state();
     }
@@ -240,16 +227,10 @@ void EsparCanComponent::evaluate_thermostat_() {
         // Below setpoint minus hysteresis → start heating
         apply_mode_(true, false);
       } else if (cur >= tgt) {
-        // At or above setpoint.
-        // pause_mode: fan  → FAN_ONLY (pseudo-pause, blower keeps running,
-        //                    no combustion, avoids full stop/start cycle).
-        // pause_mode: off  → IDLE (full shutdown, 4-min cooldown + glow-plug
-        //                    clean on every cycle — default behaviour).
-        if (pause_mode_fan_) {
-          apply_mode_(false, true);
-        } else {
-          apply_mode_(false, false);
-        }
+        // At or above setpoint → pause or idle depending on pause_mode config.
+        // pause_mode_fan_=true: stay in FAN_ONLY (blower keeps running, no combustion).
+        // pause_mode_fan_=false (default): send IDLE (full ~4-min cooldown cycle).
+        apply_mode_(false, pause_mode_fan_);
       }
       // Within hysteresis band → maintain current command state (no change)
       break;
@@ -361,8 +342,7 @@ void EsparCanComponent::handle_rx_() {
           // Heater heartbeat — update timestamp FIRST so the timeout check
           // in loop() never sees a stale value even if publish_state() callbacks
           // re-enter loop logic synchronously.
-          heater_last_seen_   = millis();
-          disconnect_pending_ = false;  // clear any pending grace-period disconnect
+          heater_last_seen_ = millis();
           if (!heater_connected_) {
             heater_connected_   = true;
             failed_start_count_ = 0;   // fresh connection resets failure counter
@@ -389,15 +369,56 @@ void EsparCanComponent::handle_rx_() {
 }  // handle_rx_
 
 void EsparCanComponent::parse_0x2C4_(const twai_message_t &msg) {
-  uint8_t  new_state = msg.data[0];
-  bool     new_flame = (msg.data[1] & 0x20) != 0;
-  uint16_t new_ctr   = static_cast<uint16_t>(msg.data[4]) |
-                       (static_cast<uint16_t>(msg.data[5]) << 8);
+  uint8_t  new_state      = msg.data[0];
+  uint8_t  new_sub        = msg.data[1];
+  uint8_t  new_fault_code = msg.data[2];  // D3: fault bits (0x00 = normal)
+  bool     new_flame      = (new_sub & 0x20) != 0;
+  uint16_t new_ctr        = static_cast<uint16_t>(msg.data[4]) |
+                            (static_cast<uint16_t>(msg.data[5]) << 8);
 
   // Always update counter — used in our TX frames
   heater_ctr_ = new_ctr;
 
-  bool state_changed = (new_state != heater_d1_state_) || (new_flame != flame_active_);
+  bool state_changed = (new_state != heater_d1_state_) || (new_flame != flame_active_)
+                     || (new_fault_code != heater_fault_code_);
+
+  // ── Active fault detection ─────────────────────────────────────────────
+  if (new_state == HEATER_STATE_FAULT && heater_d1_state_ != HEATER_STATE_FAULT) {
+    // First frame of fault state — command idle and report immediately
+    ESP_LOGE(TAG, "HEATER FAULT detected! D1=0x0B D2=0x%02X FaultCode=0x%02X", new_sub, new_fault_code);
+    cmd_heating_ = false;
+    cmd_fan_     = false;
+
+    std::string fault_msg = "FAULT";
+    if (new_fault_code & HEATER_FAULT_FLAME) {
+      fault_msg += ":FLAME_LOSS";
+      ESP_LOGE(TAG, "  Fault type: FLAME LOSS / FUEL STARVATION (D3 bit5=0x20)");
+      ESP_LOGE(TAG, "  → Check: fuel line not kinked, fuel tank not empty");
+    }
+    if (new_fault_code & HEATER_FAULT_OVERTEMP) {
+      fault_msg += ":OVERTEMP";
+      ESP_LOGE(TAG, "  Fault type: OVERTEMPERATURE / EXHAUST BLOCKED (D3 bit6=0x40)");
+      ESP_LOGE(TAG, "  → Check: exhaust outlet is clear");
+    }
+    if (new_fault_code == HEATER_FAULT_NONE) {
+      fault_msg += ":UNKNOWN";
+      ESP_LOGE(TAG, "  Fault type: unknown (D3=0x00, fault code not populated)");
+    }
+    publish_fault_(fault_msg);
+  }
+
+  // ── Post-fault code still clearing (D1=IDLE but D3 non-zero, ~26 s window) ──
+  if (new_state == HEATER_STATE_IDLE && new_fault_code != HEATER_FAULT_NONE
+      && heater_fault_code_ != HEATER_FAULT_NONE) {
+    ESP_LOGD(TAG, "Fault code 0x%02X still clearing in IDLE (~26 s window)", new_fault_code);
+  }
+  if (new_state == HEATER_STATE_IDLE && new_fault_code == HEATER_FAULT_NONE
+      && heater_fault_code_ != HEATER_FAULT_NONE) {
+    ESP_LOGI(TAG, "Fault code cleared — heater returned to normal IDLE");
+    publish_fault_("OK");
+  }
+
+  heater_fault_code_ = new_fault_code;
 
   // ── Error tracking: startup state transitions ──────────────────────
   if (new_state == HEATER_STATE_STARTUP && heater_d1_state_ != HEATER_STATE_STARTUP) {
@@ -441,7 +462,9 @@ void EsparCanComponent::parse_0x2C4_(const twai_message_t &msg) {
       (new_state == HEATER_STATE_HEATING) ? "HEATING" :
       (new_state == HEATER_STATE_FAN)     ? "FAN"     :
       (new_state == HEATER_STATE_IDLE)    ? "IDLE"    :
-      (new_state == HEATER_STATE_STARTUP) ? "STARTUP" : "UNKNOWN";
+      (new_state == HEATER_STATE_STARTUP) ? "STARTUP" :
+      (new_state == HEATER_STATE_FAULT)   ? "FAULT"   :
+      (new_state == HEATER_STATE_INIT)    ? "INIT"    : "UNKNOWN";
 
     ESP_LOGI(TAG, "Heater state: %s | Flame: %s | Ctr: 0x%04X",
       state_str, new_flame ? "ON" : "off", new_ctr);
@@ -451,11 +474,11 @@ void EsparCanComponent::parse_0x2C4_(const twai_message_t &msg) {
   }
 }
 
-// Log unexpected CAN IDs — these may be fault frames from the heater.
-// Captured here so we can RE them in a future session.
+// Log unexpected CAN IDs for future RE analysis.
+// Note: fault states are encoded in 0x2C4 D1=0x0B + D3 (not a separate frame ID).
 void EsparCanComponent::on_unexpected_id_(const twai_message_t &msg) {
   ESP_LOGD(TAG,
-    "Unexpected CAN ID 0x%03lX [%u]: %02X %02X %02X %02X %02X %02X %02X %02X — possible fault frame",
+    "Unexpected CAN ID 0x%03lX [%u]: %02X %02X %02X %02X %02X %02X %02X %02X",
     (unsigned long)msg.identifier, msg.data_length_code,
     msg.data[0], msg.data[1], msg.data[2], msg.data[3],
     msg.data[4], msg.data[5], msg.data[6], msg.data[7]);
@@ -475,12 +498,35 @@ void EsparCanComponent::on_unexpected_id_(const twai_message_t &msg) {
 // =============================================================================
 
 void EsparCanComponent::send_frame_(uint32_t id, const uint8_t *data, uint8_t len, bool ext) {
+  if (tx_standby_) return;  // CAN TX suspended — OEM tool may be connected
   twai_message_t msg = {};
   msg.identifier       = id;
   msg.extd             = ext ? 1 : 0;
   msg.data_length_code = len;
   for (int i = 0; i < len && i < 8; i++) msg.data[i] = data[i];
   twai_transmit(&msg, pdMS_TO_TICKS(5));
+}
+
+// Called from YAML switch lambda (Espar CAN Standby).
+// Suspending TX allows OEM EasyStart Pro / EasyScan to connect without
+// triggering fault P000342 (too many CAN controllers).
+// Resuming triggers a fresh init burst to re-establish the handshake.
+void EsparCanComponent::set_tx_standby(bool s) {
+  if (s == tx_standby_) return;
+  tx_standby_ = s;
+  if (s) {
+    ESP_LOGI(TAG, "CAN TX standby ON — all outbound frames suspended");
+    // Drop command state so we re-sync cleanly on resume
+    cmd_heating_      = false;
+    cmd_fan_          = false;
+  } else {
+    ESP_LOGI(TAG, "CAN TX standby OFF — re-running init burst");
+    // Re-establish connection with the heater
+    heater_connected_ = false;
+    heater_ctr_       = 0xFFFE;
+    init_done_        = false;
+    t_init_last_      = millis() - INIT_RESEND_MS;  // fire immediately next loop
+  }
 }
 
 // Init burst — sent at startup and repeated every 150ms until heater responds.
@@ -519,7 +565,6 @@ void EsparCanComponent::send_init_burst_() {
 
 // Controller alive heartbeat — sent every 100ms
 void EsparCanComponent::send_heartbeat_() {
-  if (tx_standby_) return;
   static const uint8_t d[] = {0x0D,0x10,0x82,0xB6,0x09,0x20,0x70,0x00};
   send_frame_(0x60D, d, 8);
 }
@@ -527,7 +572,6 @@ void EsparCanComponent::send_heartbeat_() {
 // Primary command group — sent every 200ms
 // 0x54 payload encodes mode and setpoint; 0x55/56/57 are static config
 void EsparCanComponent::send_command_group_() {
-  if (tx_standby_) return;
   uint8_t ctr_lo = static_cast<uint8_t>(heater_ctr_ & 0xFF);
   uint8_t ctr_hi = static_cast<uint8_t>((heater_ctr_ >> 8) & 0xFF);
 
@@ -604,31 +648,12 @@ void EsparCanComponent::publish_fault_(const std::string &msg) {
   if (fault_sensor_) fault_sensor_->publish_state(msg);
 }
 
-// Suspend or resume all outbound CAN frames.
-// Use before connecting OEM diagnostic tools (EasyStart Pro / EasyScan)
-// to prevent P000342 ("too many CAN controllers").
-// Resuming clears heater_connected_ so the init burst handshake re-runs.
-void EsparCanComponent::set_tx_standby(bool active) {
-  if (active == tx_standby_) return;
-  tx_standby_ = active;
-  if (active) {
-    ESP_LOGI(TAG, "TX standby ON — all outbound frames suspended");
-    publish_fault_("TX standby: safe to connect OEM tool");
-  } else {
-    ESP_LOGI(TAG, "TX standby OFF — resuming, re-running CAN handshake");
-    // Force re-handshake so the heater knows we're back
-    heater_connected_   = false;
-    disconnect_pending_ = false;
-    t_init_last_        = 0;   // fire init burst on next loop tick
-    if (connected_sensor_) connected_sensor_->publish_state(false);
-    if (fault_sensor_)     fault_sensor_->publish_state("OK");
-  }
-}
-
 void EsparCanComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "Espar Airtronic S3 CAN Controller:");
   ESP_LOGCONFIG(TAG, "  CAN TX: GPIO%d  RX: GPIO%d  500 kbps", CAN_TX_PIN, CAN_RX_PIN);
   ESP_LOGCONFIG(TAG, "  Heat setpoint to heater: %.0f°F", heat_setpoint_f_);
+  ESP_LOGCONFIG(TAG, "  Cabin temp unit: %s", cabin_temp_fahrenheit_ ? "fahrenheit (converting °F→°C)" : "celsius (passthrough)");
+  ESP_LOGCONFIG(TAG, "  Pause mode: %s", pause_mode_fan_ ? "fan (FAN_ONLY at setpoint)" : "off (IDLE at setpoint)");
   ESP_LOGCONFIG(TAG, "  Thermostat hysteresis: %.1f°C", HYSTERESIS_C);
   LOG_TEXT_SENSOR("  ",    "Heater State",     heater_state_sensor_);
   LOG_BINARY_SENSOR("  ",  "Flame Active",     flame_sensor_);

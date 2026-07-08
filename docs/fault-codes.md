@@ -1,13 +1,20 @@
 # Fault Codes
 
-## Status: Partial — behavioral detection only
+## Status: Partial — CAN fault state decoded; full fault frame protocol not yet captured
 
-The ESPHome component currently detects faults **behaviorally** — from the patterns of known frames (0x2C4 and 0x625) rather than from decoded fault reporting frames. The Eberspächer service manual confirms that fault codes are exposed over CAN via the EasyScan diagnostic tool, but the specific CAN frame IDs and payload structure for fault reporting have not yet been captured and decoded.
+The ESPHome component detects faults two ways:
+
+1. **CAN-native fault state (confirmed):** `0x2C4 D1=0x0B` signals an active fault. `D3` carries a fault code byte — two values confirmed via controlled captures: `0x20` (flame loss / fuel starvation) and `0x40` (overtemperature / exhaust blocked). See `ESPAR_CAN_Fault_Analysis.md` for the full capture analysis.
+
+2. **Behavioral detection (implemented):** Patterns from 0x2C4 and 0x625 — failed starts, heartbeat loss, startup timeout, lockout.
+
+The Eberspächer EasyScan diagnostic tool communicates via a separate CAN request/response protocol. The frame IDs and payload structure for that protocol have not yet been captured. The 6 remaining D3 bit positions (bits 0–4, bit 7) are also unconfirmed — each likely maps to a different fault category.
 
 This document covers:
 1. What the component currently detects and how
-2. The complete P-code reference from the service manual (for future RE and lookup)
-3. A capture plan for decoding fault frames
+2. Confirmed CAN fault state decode (D1=0x0B, D3 fault codes)
+3. The complete P-code reference from the service manual
+4. A capture plan for remaining unknown D3 bits
 
 ---
 
@@ -56,37 +63,61 @@ action:
 
 ---
 
-## Phase 2 — Fault frame RE (future work)
+## Phase 2 — Confirmed CAN fault state (0x2C4)
+
+### What was decoded
+
+Two controlled fault captures (`Espar CAN-Bus outlet obstruction.csv`, `Espar CAN-Bus fuel line pinched.csv`) confirmed the following via differential analysis:
+
+| Signal | Location | Value | Meaning |
+|---|---|---|---|
+| Fault active | 0x2C4 D1 | `0x0B` | Heater in fault state |
+| Fault code | 0x2C4 D3 | `0x20` (bit 5) | Flame loss / fuel starvation |
+| Fault code | 0x2C4 D3 | `0x40` (bit 6) | Overtemperature / exhaust blocked |
+| Fault flag | 0x2C4 D2 | `0x08` | Set during active fault |
+
+**Post-fault behavior:** D3 persists with the fault code for ~26 seconds after D1 returns to IDLE (0x03). The ESPHome component handles this by latching the fault and clearing only when D3 returns to 0x00.
+
+**What's still unknown:** Bits 0–4 and bit 7 of D3 have never been observed non-zero. Each likely maps to a different fault category. See the open GitHub issue for the remaining capture targets.
+
+See `ESPAR_CAN_Fault_Analysis.md` for the full capture methodology and frame-by-frame analysis.
+
+---
+
+## Phase 3 — EasyScan protocol RE (not yet started)
 
 ### What the manual tells us
 
 The Eberspächer Airtronic S3 uses the **EasyScan** diagnostic tool, which connects via CAN. This means the heater exposes fault codes over CAN via a request/response protocol. The parenthetical numbers in the fault table (e.g. P000307 **(081)**) are the fault codes as reported on the CAN interface and are the target decode values.
 
+This is a separate, more complex protocol from the status frame fault state above. The 0x2C4 fault state gives you the fault category; the EasyScan protocol would give you the specific P-code.
+
 ### Capture methodology
 
 For each fault below, trigger the condition deliberately with SavvyCAN logging all frames. New or changed frames relative to normal operation are the fault reporting frames.
 
-**Priority capture targets:**
+**Priority capture targets for remaining D3 bits:**
 
-| Priority | Fault | How to trigger | What to look for |
+| Priority | Fault | How to trigger | D3 bit expected |
 |---|---|---|---|
-| 1 | Communication error P000307 | Disconnect controller mid-session | New ID or changed 0x2C4 payload |
-| 2 | Failed start P00012A | Remove fuel line briefly | Repeated startup frames, then new ID |
-| 3 | Air inlet sensor P000110 | Unplug sensor connector briefly | New ID within ~5s |
-| 4 | Overheating P000115 | Block exhaust briefly (outdoors only!) | New ID + D1 state change |
-| 5 | Flame cutout P000125–129 | Reduce fuel flow | Short burst, then restart attempt |
+| 1 | Glow plug | Unplug glow plug connector before start | Unknown (bits 0–4, 7) |
+| 2 | Metering pump | Disconnect pump connector | Unknown |
+| 3 | Burner motor | Unplug blower motor | Unknown |
+| 4 | Air inlet sensor | Unplug inlet sensor | Unknown |
+| 5 | Overvoltage / undervoltage | Vary supply voltage | Unknown |
+| 6 | Flame sensor | Unplug flame sensor mid-run | Unknown |
 
 **Capture procedure:**
 1. SavvyCAN running, logging all frames
 2. Note timestamp
 3. Trigger fault
-4. Wait 30s for heater response
-5. Reconnect / clear fault and verify fault frames disappear
+4. Wait 30s for heater response — note D1 and D3 values in 0x2C4
+5. Reconnect / clear fault and verify D3 returns to 0x00
 
 **What to look for:**
-- New IDs not present in normal operation
+- New IDs not present in normal operation (EasyScan request/response pair)
+- D3 value in 0x2C4 during the fault — compare against confirmed 0x20 and 0x40
 - Burst of 3–5 identical frames (common Eberspächer pattern)
-- Request/response pair: a short TX frame followed immediately by a new RX frame
 - Payload byte matching the CAN code number in the table below (e.g. code 081 for P000307)
 
 ---

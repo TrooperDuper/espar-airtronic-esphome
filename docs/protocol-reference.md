@@ -32,14 +32,16 @@
 ### 0x2C4 — Primary Status
 
 ```
-[D1][D2][00][00][D5][D6][00][00]
+[D1][D2][D3][00][D5][D6][00][00]
 ```
 
 | Byte | Signal | Decode |
 |---|---|---|
 | D1 | Heater state | See state table below |
 | D2 bit 5 | Flame active | `(D2 & 0x20) != 0` — non-zero when combustion confirmed |
-| D5–D6 | Counter | 16-bit LE counter; echoes controller counter during heating |
+| D2 | Fault flag | `0x08` when D1=0x0B (fault active) |
+| D3 | Fault code | Non-zero during fault and for ~26s post-fault in IDLE. See fault code table below. |
+| D5–D6 | Counter | 16-bit LE counter; echoes controller counter during heating. Heater runs its own independent counter during fault. |
 
 **Heater state codes (D1):**
 
@@ -47,13 +49,33 @@
 |---|---|---|
 | `0x02` | STARTUP | Initializing / pre-heat |
 | `0x03` | IDLE | Off — standby |
+| `0x08` | INIT | Seen briefly at first contact |
 | `0x09` | HEATING | Flame + blower running |
+| `0x0B` | FAULT | Active fault — check D3 for fault code |
 | `0x21` | FAN | Blower only (no combustion) — confirmed from capture |
+
+**D3 fault codes (confirmed):**
+
+| D3 value | Bit | Fault category | P-codes |
+|---|---|---|---|
+| `0x20` | bit 5 | Flame loss / fuel starvation | P000125–129, P00012A |
+| `0x40` | bit 6 | Overtemperature / exhaust blocked | P000115, P000116 |
+
+> Bits 0–4 and bit 7 have not been observed non-zero. Each likely maps to a different fault category. Confirmed via captures `Espar CAN-Bus outlet obstruction.csv` and `Espar CAN-Bus fuel line pinched.csv`.
+
+**D2 sub-states during HEATING:**
+
+| D2 value | Meaning |
+|---|---|
+| `0x00` | No flame yet |
+| `0x08` | Intermediate / transition |
+| `0x20` | Flame confirmed |
 
 **Quick decode:**
 ```python
-state = msg[0]         # 0x09=heating, 0x21=fan, 0x03=idle, 0x02=startup
+state = msg[0]         # 0x09=heating, 0x21=fan, 0x03=idle, 0x02=startup, 0x0B=fault
 flame = msg[1] & 0x20  # non-zero = flame active
+fault_code = msg[2]    # non-zero during fault (and ~26s post-fault): 0x20=flame, 0x40=overtemp
 ```
 
 ---
@@ -241,9 +263,9 @@ Send once at startup in this order, then repeat every 150ms until the heater's 0
 ### One controller limit
 The heater allows a maximum of 2 CAN controllers simultaneously. Connecting the OEM EasyStart Pro while the WeAct is also connected will trigger fault P000342 ("too many CAN controllers") and may lock the control box. **Disconnect the WeAct before connecting OEM diagnostic tools.**
 
-### Fault frame IDs not yet decoded
-The heater exposes fault codes over CAN (confirmed by the EasyScan diagnostic tool using CAN). The P-code numbers are known from the service manual, but the CAN frame IDs and payload structure for fault reporting have not yet been captured. See [fault-codes.md](fault-codes.md) for the full capture plan and P-code table.
+### Fault state is in 0x2C4 (D1=0x0B, D3=fault code)
+The heater signals faults via the primary status frame — no separate fault frame ID is needed for the two confirmed fault categories. `D1=0x0B` means fault active; `D3` carries the fault code (`0x20`=flame loss, `0x40`=overtemp). The EasyScan diagnostic tool uses a separate CAN request/response protocol whose frame IDs have not yet been captured — that protocol would give P-code granularity beyond what D3 provides. See [fault-codes.md](fault-codes.md) for full details.
 
 ---
 
-*Based on captures through Phase 2 Step 2J + FAN ONLY capture. Developed in collaboration with Claude (Anthropic). Last updated 2026-05-06.*
+*Based on captures through Phase 2 Step 2J + FAN ONLY capture + two fault captures (outlet obstruction, fuel line pinch). Developed in collaboration with Claude (Anthropic). Last updated 2026-06-11.*
