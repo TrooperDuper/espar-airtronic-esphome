@@ -58,8 +58,14 @@ See the [open issues](../../issues) for details and ways to contribute.
 
 | Component | Notes |
 |---|---|
-| [WeAct CAN485 V1.0 (ESP32)](https://github.com/WeActStudio/WeActStudio.CAN485DevBoardV1_ESP32/tree/master) | ESP32 + onboard CAN transceiver. No external level shifter needed. The onboard 120Ω termination switch must be OFF — the WeAct connects as a mid-bus node at the EasyStart Pro Molex, not as a bus endpoint. |
-| Molex MicroFit 3.0 dual-row connector | For tapping the heater harness at the XB10 connector without cutting wires |
+| [WeAct CAN485 V1.0 (ESP32)](https://github.com/WeActStudio/WeActStudio.CAN485DevBoardV1_ESP32/tree/master) | ESP32 + onboard CAN transceiver. No external level shifter needed. The onboard 120Ω termination switch must be OFF — the WeAct taps mid-bus and is not a bus endpoint. |
+| Molex MicroFit 3.0 dual-row connector | For tapping the heater harness without cutting wires |
+
+You can tap CAN H/L at either connector — both are on the same bus:
+- **XB10** (heater-side, 10-pin) — grey/blue = CAN H, green/yellow = CAN L
+- **EasyStart Pro** (controller-side, 4-pin) — blue/red = CAN H, blue/black = CAN L
+
+Wire colors vary by harness revision. See [docs/hardware-setup.md](docs/hardware-setup.md) for full pinout tables for both connectors.
 
 Full wiring and pinout details: [docs/hardware-setup.md](docs/hardware-setup.md)
 

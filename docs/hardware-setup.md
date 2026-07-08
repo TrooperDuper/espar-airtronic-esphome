@@ -36,6 +36,29 @@ The heater harness uses a **Molex MicroFit 3.0 dual-row** connector at the XB10 
 
 ---
 
+## Controller connector — EasyStart Pro
+
+The EasyStart Pro plugs into the harness with a **4-wire** connector
+(power + CAN only — it does not break out the full XB10 pinout). If you tap
+at the controller rather than the heater, use these colors:
+
+| Wire color (observed) | Signal |
+|---|---|
+| BU/RD (blue/red)   | CAN H      |
+| BU/BK (blue/black) | CAN L      |
+| RD (red)           | +12V       |
+| BN (brown)         | Ground (−) |
+
+Wire colors confirmed against the OEM technical description wiring diagram (section 5.3.2 / 5.4.1). The ground wire at the EasyStart Pro connector is solid brown (BN) — distinct from the brown/black (BR/BK) ground observed at the XB10 heater connector; both are the same ground rail.
+
+> ⚠️ CAN H/L are differential — swapping them will not damage anything, the bus
+> just won't decode (garbage frames). Flip them if you aren't reading valid data.
+
+> Note: wire colors can vary by harness revision — verify against your own
+> connector before tapping.
+
+---
+
 ## GPIO pin assignments (WeAct CAN485)
 
 | GPIO | Function |
