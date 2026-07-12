@@ -66,10 +66,14 @@ void EsparCanComponent::setup() {
 void EsparCanComponent::loop() {
   if (!driver_installed_) return;
 
-  uint32_t now = millis();
-
   // ── RX: process incoming heater frames ──────────────────────────────
   handle_rx_();
+
+  // Capture 'now' AFTER handle_rx_(): note_heater_alive_() sets
+  // heater_last_seen_ = millis() while draining RX, so sampling 'now' before
+  // that lets (now - heater_last_seen_) underflow (uint32) and spuriously trip
+  // the heartbeat timeout — the cause of connect/disconnect flapping.
+  uint32_t now = millis();
 
   // ── Init burst retry until heater acks ──────────────────────────────
   if (!heater_connected_ && (now - t_init_last_) >= INIT_RESEND_MS) {
