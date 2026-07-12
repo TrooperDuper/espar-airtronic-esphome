@@ -66,10 +66,14 @@ void EsparCanComponent::setup() {
 void EsparCanComponent::loop() {
   if (!driver_installed_) return;
 
-  uint32_t now = millis();
-
   // ── RX: process incoming heater frames ──────────────────────────────
   handle_rx_();
+
+  // Capture 'now' AFTER handle_rx_(): note_heater_alive_() sets
+  // heater_last_seen_ = millis() while draining RX, so sampling 'now' before
+  // that lets (now - heater_last_seen_) underflow (uint32) and spuriously trip
+  // the heartbeat timeout — the cause of connect/disconnect flapping.
+  uint32_t now = millis();
 
   // ── Init burst retry until heater acks ──────────────────────────────
   if (!heater_connected_ && (now - t_init_last_) >= INIT_RESEND_MS) {
@@ -139,13 +143,14 @@ void EsparCanComponent::loop() {
 
 climate::ClimateTraits EsparCanComponent::traits() {
   auto traits = climate::ClimateTraits();
-  traits.set_supports_current_temperature(true);
+  // ESPHome 2026.x replaced the set_supports_* booleans with feature flags.
+  traits.add_feature_flags(climate::CLIMATE_SUPPORTS_CURRENT_TEMPERATURE |
+                           climate::CLIMATE_SUPPORTS_ACTION);
   traits.set_supported_modes({
       climate::CLIMATE_MODE_OFF,
       climate::CLIMATE_MODE_HEAT,
       climate::CLIMATE_MODE_FAN_ONLY,
   });
-  traits.set_supports_action(true);
   traits.set_visual_min_temperature(15.0f);   // 59°F
   traits.set_visual_max_temperature(30.0f);   // 86°F
   traits.set_visual_temperature_step(0.5f);
