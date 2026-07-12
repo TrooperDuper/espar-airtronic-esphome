@@ -4,7 +4,7 @@
 
 - ESPHome 2026.3 or later
 - ESP32 board (tested on WeAct CAN485 V1.0 with `esp32dev` board config)
-- `framework: type: arduino` — required for the neopixelbus LED component
+- `framework: type: arduino` — this config targets the Arduino framework (the status LED uses `esp32_rmt_led_strip`, which also supports ESP-IDF)
 
 ## Setup
 
@@ -182,6 +182,8 @@ The `Espar CAN Standby` switch (defined in `espar-heater.yaml`) suspends all out
 | `switch.espar_can_standby` | Switch | Suspend all TX frames for OEM diagnostics (see below) |
 | `light.espar_status_led` | Light | WS2812 RGB indicator |
 | `button.restart_espar_controller` | Button | Restart the ESP32 (required for initial boot sync) |
+
+> **Variant note:** `binary_sensor.espar_connected` latches on the heater's `0x625` heartbeat frame. This was validated on the **B2L (gasoline)** Airtronic S3; on other variants such as the diesel **D2L**, the heartbeat frame ID or cadence may differ, so connection detection may not behave identically and could need adjustment.
 
 ---
 
