@@ -207,11 +207,11 @@ espar_can:
 # ── Onboard WS2812 RGB LED (GPIO4) ───────────────────────────────────────────
 # Amber=heating  Blue=fan  Dim green=idle/connected  Red pulse=fault
 light:
-  - platform: neopixelbus
+  - platform: esp32_rmt_led_strip
     name: "Espar Status LED"
     id: status_led
-    type: GRB
-    variant: WS2812
+    rgb_order: GRB
+    chipset: WS2812
     pin: GPIO4
     num_leds: 1
     effects:
@@ -233,8 +233,9 @@ button:
 
 # ── CAN standby switch ────────────────────────────────────────────────────────
 # Suspends all outbound CAN frames without physically unplugging the WeAct.
-# Use before connecting the EasyStart Pro or any OEM diagnostic tool to avoid
-# triggering fault P000342 (too many CAN controllers).
+# Use before connecting a real EasyStart Pro / OEM diagnostic tool: the WeAct
+# emulates the EasyStart Pro, so two of them on the bus is an ADR/identity
+# collision (fault P000342, "invalid configuration — check ADR coding").
 # Resuming automatically re-runs the CAN handshake.
 switch:
   - platform: template

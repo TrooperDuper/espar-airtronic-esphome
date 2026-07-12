@@ -260,8 +260,8 @@ Send once at startup in this order, then repeat every 150ms until the heater's 0
 
 ## Important notes
 
-### One controller limit
-The heater allows a maximum of 2 CAN controllers simultaneously. Connecting the OEM EasyStart Pro while the WeAct is also connected will trigger fault P000342 ("too many CAN controllers") and may lock the control box. **Disconnect the WeAct before connecting OEM diagnostic tools.**
+### Controller addressing (ADR coding)
+Eberspächer supports multiple control elements on the bus — each is assigned its own ADR address (e.g. an EasyStart Pro and EasyStart Remote+ run together, per the OEM manual and confirmed by users), so this is not a controller-count limit. The WeAct currently *emulates the EasyStart Pro* (same CAN IDs and identity), so running it alongside a real EasyStart Pro puts two devices with the same identity on the bus — an invalid configuration that can trigger fault P000342 ("invalid configuration — check ADR coding") and may lock the control box. As a precaution, use the CAN Standby switch (or disconnect the WeAct) before connecting a real EasyStart Pro / OEM diagnostic tool. Exact trigger conditions are still under investigation.
 
 ### Fault state is in 0x2C4 (D1=0x0B, D3=fault code)
 The heater signals faults via the primary status frame — no separate fault frame ID is needed for the two confirmed fault categories. `D1=0x0B` means fault active; `D3` carries the fault code (`0x20`=flame loss, `0x40`=overtemp). The EasyScan diagnostic tool uses a separate CAN request/response protocol whose frame IDs have not yet been captured — that protocol would give P-code granularity beyond what D3 provides. See [fault-codes.md](fault-codes.md) for full details.

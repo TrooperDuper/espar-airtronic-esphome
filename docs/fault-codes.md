@@ -206,7 +206,7 @@ From the Eberspächer Airtronic S3 D2L/B2L service manual (06/2023).
 | P000331 | 093 | RAM error | 1 |
 | P000332 | 094 | NVMEM error (EEPROM/DataFlash) | 1 |
 | P000333 | — | AD converter error | 1 |
-| **P000342** | — | **Invalid configuration — too many CAN controllers** | **1** |
+| **P000342** | — | **Invalid configuration — check ADR coding** | **1** |
 | P000343 | — | Parameter dataset incompatible | 1 |
 | P000440 | 083 | Timeout — communication with control unit | 0 |
 | P000441 | — | Timeout during LIN communication | 0 |
@@ -214,7 +214,7 @@ From the Eberspächer Airtronic S3 D2L/B2L service manual (06/2023).
 
 ### Critical notes
 
-**P000342 — Too many CAN controllers:** Maximum 2 CAN controllers allowed simultaneously. Do not connect the OEM EasyStart Pro while the WeAct is connected — disconnect the WeAct first.
+**P000342 — Invalid configuration (ADR coding):** This is an addressing/configuration fault, not a controller-count limit. Eberspächer supports multiple control elements on the bus — each is assigned its own ADR address (e.g. an EasyStart Pro and EasyStart Remote+ run together, per the OEM manual and confirmed by users). The WeAct can conflict because it currently *emulates the EasyStart Pro* — same CAN IDs and identity — so running it alongside a real EasyStart Pro puts two devices with the same identity on the bus, which is an invalid configuration. As a precaution, use the CAN Standby switch (or disconnect the WeAct) when a real EasyStart Pro is on the bus, until the WeAct registers as its own distinctly-addressed (ADR) device. Exact trigger conditions are still under investigation.
 
 **P000440 — Communication timeout:** This is the heater's normal response when the controller stops sending frames. The component's init burst retry loop handles reconnection automatically.
 

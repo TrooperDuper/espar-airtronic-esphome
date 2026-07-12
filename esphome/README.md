@@ -154,7 +154,7 @@ espar_can:
 
 ## OEM diagnostics — CAN standby mode
 
-The Airtronic S3 allows a maximum of 2 CAN controllers on the bus. Connecting the EasyStart Pro or EasyScan while the WeAct is also active triggers fault **P000342** (too many CAN controllers).
+Eberspächer supports multiple control elements on the CAN bus — each gets its own address via ADR coding (an EasyStart Pro and EasyStart Remote+ can run together). The WeAct currently *emulates the EasyStart Pro*, so running it alongside a real EasyStart Pro puts two devices with the same identity on the bus — an invalid configuration that can trigger fault **P000342** ("invalid configuration — check ADR coding"). This is an addressing collision, not a controller-count limit.
 
 The `Espar CAN Standby` switch (defined in `espar-heater.yaml`) suspends all outbound frames from the WeAct without physically unplugging anything. Turning it ON from HA before connecting an OEM tool prevents the conflict. Turning it OFF afterwards automatically re-runs the CAN handshake.
 

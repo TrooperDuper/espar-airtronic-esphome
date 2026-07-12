@@ -151,7 +151,8 @@ class EsparCanComponent : public climate::Climate, public Component {
   // Avoids repeated full stop/start cycles; blower runs ~4W continuous.
   bool  pause_mode_fan_{false};
   // When true, all outbound CAN frames are suppressed (TX standby).
-  // Use before connecting OEM EasyStart Pro to avoid P000342.
+  // Use when a real EasyStart Pro is on the bus: the WeAct emulates the Pro's
+  // identity, so both active is an ADR collision (P000342, invalid config).
   bool  tx_standby_{false};
 
   // ── CAN state ────────────────────────────────────────────────────────
