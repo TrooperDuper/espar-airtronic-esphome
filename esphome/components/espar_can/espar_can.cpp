@@ -139,13 +139,14 @@ void EsparCanComponent::loop() {
 
 climate::ClimateTraits EsparCanComponent::traits() {
   auto traits = climate::ClimateTraits();
-  traits.set_supports_current_temperature(true);
+  // ESPHome 2026.x replaced the set_supports_* booleans with feature flags.
+  traits.add_feature_flags(climate::CLIMATE_SUPPORTS_CURRENT_TEMPERATURE |
+                           climate::CLIMATE_SUPPORTS_ACTION);
   traits.set_supported_modes({
       climate::CLIMATE_MODE_OFF,
       climate::CLIMATE_MODE_HEAT,
       climate::CLIMATE_MODE_FAN_ONLY,
   });
-  traits.set_supports_action(true);
   traits.set_visual_min_temperature(15.0f);   // 59°F
   traits.set_visual_max_temperature(30.0f);   // 86°F
   traits.set_visual_temperature_step(0.5f);
