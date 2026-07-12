@@ -334,28 +334,36 @@ void EsparCanComponent::handle_rx_() {
 
       switch (msg.identifier) {
         case 0x2C4:
-          if (!msg.rtr && msg.data_length_code >= 6)
+          if (!msg.rtr && msg.data_length_code >= 6) {
+            note_heater_alive_();   // status frame counts as liveness (variant-robust)
             parse_0x2C4_(msg);
+          }
           break;
 
         case 0x625:
-          // Heater heartbeat — update timestamp FIRST so the timeout check
-          // in loop() never sees a stale value even if publish_state() callbacks
-          // re-enter loop logic synchronously.
-          heater_last_seen_ = millis();
-          if (!heater_connected_) {
-            heater_connected_   = true;
-            failed_start_count_ = 0;   // fresh connection resets failure counter
-            locked_out_         = false;
-            ESP_LOGI(TAG, "Heater heartbeat received — connected");
-            if (connected_sensor_) connected_sensor_->publish_state(true);
-            if (fault_sensor_)     fault_sensor_->publish_state("OK");
-          }
+          // Heater heartbeat — also treated as liveness. Kept as an explicit case
+          // so the heartbeat alone keeps the connection alive when 0x2C4 is idle.
+          note_heater_alive_();
           break;
 
         case 0x2C5:
         case 0x2C6:
           // Known IDs with no actionable content observed — suppress verbose log
+          break;
+
+        case 0x54:
+        case 0x55:
+        case 0x56:
+        case 0x57:
+          // OEM controller command frames (e.g. a real EasyStart Pro sharing the
+          // bus). The WeAct emulates these same IDs, so observing them is expected,
+          // not a fault. Log at debug for RE only — do NOT publish a fault or drive
+          // the status LED red.
+          ESP_LOGD(TAG,
+            "OEM controller frame 0x%03lX [%u]: %02X %02X %02X %02X %02X %02X %02X %02X",
+            (unsigned long)msg.identifier, msg.data_length_code,
+            msg.data[0], msg.data[1], msg.data[2], msg.data[3],
+            msg.data[4], msg.data[5], msg.data[6], msg.data[7]);
           break;
 
         default:
@@ -471,6 +479,23 @@ void EsparCanComponent::parse_0x2C4_(const twai_message_t &msg) {
 
     if (heater_state_sensor_) heater_state_sensor_->publish_state(state_str);
     if (flame_sensor_)         flame_sensor_->publish_state(new_flame);
+  }
+}
+
+// Mark the heater as alive. Called for both the 0x625 heartbeat and 0x2C4 status
+// frames, so connection detection survives on variants (e.g. diesel D2L) where the
+// 0x625 heartbeat ID or cadence differs from the B2L this was originally built on.
+void EsparCanComponent::note_heater_alive_() {
+  // Update timestamp FIRST so the timeout check in loop() never sees a stale value
+  // even if publish_state() callbacks re-enter loop logic synchronously.
+  heater_last_seen_ = millis();
+  if (!heater_connected_) {
+    heater_connected_   = true;
+    failed_start_count_ = 0;   // fresh connection resets failure counter
+    locked_out_         = false;
+    ESP_LOGI(TAG, "Heater alive (heartbeat/status) — connected");
+    if (connected_sensor_) connected_sensor_->publish_state(true);
+    if (fault_sensor_)     fault_sensor_->publish_state("OK");
   }
 }
 

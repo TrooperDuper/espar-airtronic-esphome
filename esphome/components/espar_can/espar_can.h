@@ -116,6 +116,9 @@ class EsparCanComponent : public climate::Climate, public Component {
   void handle_rx_();
   void parse_0x2C4_(const twai_message_t &msg);
   void on_unexpected_id_(const twai_message_t &msg);
+  // Marks the heater alive (latches connection + refreshes liveness timestamp).
+  // Called for both the 0x625 heartbeat and 0x2C4 status frames.
+  void note_heater_alive_();
 
   // ── Thermostat logic ─────────────────────────────────────────────────
   void evaluate_thermostat_();
