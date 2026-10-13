@@ -608,19 +608,19 @@ void EsparCanComponent::restart_handshake_() {
   t_init_last_      = millis() - INIT_RESEND_MS;  // fire immediately next loop
 }
 
-// EXPERIMENT: controller identity. See docs/protocol-reference.md (0x60D).
+// Controller identity. See docs/protocol-reference.md (0x60D).
 void EsparCanComponent::set_controller_id(uint32_t id24) {
   uint8_t a = (id24 >> 16) & 0xFF, b = (id24 >> 8) & 0xFF, c = id24 & 0xFF;
   if (a == ctrl_id_[0] && b == ctrl_id_[1] && c == ctrl_id_[2]) return;
   ctrl_id_[0] = a; ctrl_id_[1] = b; ctrl_id_[2] = c;
-  ESP_LOGW(TAG, "EXPERIMENT: controller ID (0x60D D3-D5) now %02X %02X %02X — re-running init", a, b, c);
+  ESP_LOGW(TAG, "Controller ID (0x60D D3-D5) now %02X %02X %02X — re-running init", a, b, c);
   if (driver_installed_ && !tx_standby_) restart_handshake_();
 }
 
 void EsparCanComponent::set_init_0x62_byte(uint8_t v) {
   if (v == init_62_last_) return;
   init_62_last_ = v;
-  ESP_LOGW(TAG, "EXPERIMENT: init frame 0x62 D8 now 0x%02X — re-running init", v);
+  ESP_LOGW(TAG, "Init frame 0x62 D8 now 0x%02X — re-running init", v);
   if (driver_installed_ && !tx_standby_) restart_handshake_();
 }
 

@@ -108,7 +108,7 @@ class EsparCanComponent : public climate::Climate, public Component {
   void set_pause_mode_fan(bool f)                           { pause_mode_fan_ = f; }
   void set_auto_clear_idle_lock(bool b)                     { auto_clear_idle_lock_ = b; }
   void set_tx_standby(bool s);
-  // EXPERIMENT (controller identity): 24-bit ID sent in 0x60D D3–D5, and the
+  // Controller identity: 24-bit ID sent in 0x60D D3–D5, and the
   // last byte of init frame 0x62. Changing either at runtime re-runs the init
   // handshake (same path as leaving CAN standby).
   void set_controller_id(uint32_t id24);
@@ -179,7 +179,8 @@ class EsparCanComponent : public climate::Climate, public Component {
   // Use when a real EasyStart Pro is on the bus: the WeAct emulates the Pro's
   // identity, so both active is an ADR collision (P000342, invalid config).
   bool  tx_standby_{false};
-  // Controller identity (EXPERIMENT). Defaults = the maintainer's EasyStart Pro.
+  // Controller identity. Defaults = the maintainer's EasyStart Pro. The heater
+  // accepted any ID tested (incl. made-up and MAC-derived) and doesn't check 0x62 D8.
   uint8_t ctrl_id_[3]{0x82, 0xB6, 0x09};  // 0x60D D3–D5
   uint8_t init_62_last_{0xF1};            // 0x62 D8
   void restart_handshake_();

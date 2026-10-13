@@ -149,6 +149,7 @@ espar_can:
                   green: 30%
                   blue: 0%
                   brightness: 50%
+                  effect: "None"
         - if:
             condition:
               lambda: 'return x == "FAN";'
@@ -159,6 +160,7 @@ espar_can:
                   green: 0%
                   blue: 100%
                   brightness: 30%
+                  effect: "None"
         - if:
             condition:
               lambda: 'return x == "IDLE";'
@@ -169,6 +171,7 @@ espar_can:
                   green: 100%
                   blue: 0%
                   brightness: 15%
+                  effect: "None"
 
   # True while the heater reports HEATING (0x2C4 D1=0x09) — includes the
   # ignition ramp, so it turns on before combustion is established.
@@ -213,6 +216,7 @@ espar_can:
                   green: 5%
                   blue: 0%
                   brightness: 10%
+                  effect: "None"
 
 # ── Onboard WS2812 RGB LED (GPIO4) ───────────────────────────────────────────
 # Amber=heating  Blue=fan  Dim green=idle/connected  Red pulse=fault

@@ -140,6 +140,16 @@ espar_can:
 
   current_temperature_sensor: cabin_avg_temp   # optional; heats continuously if omitted
 
+  auto_clear_idle_lock: true            # default true. After a heater power interruption the heater
+                                        # often sits in IDLE with fault byte D3=0x04 and ignores
+                                        # HEAT/FAN. When true, the component releases it (45 s wait,
+                                        # FAN 6 s, IDLE 5 s, up to 3 tries). See docs/fault-codes.md.
+
+  controller_id: 0x82B609               # optional; 24-bit ID sent in 0x60D D3–D5 (default shown)
+  init_0x62_byte: 0xF1                  # optional; last byte of init frame 0x62 (default shown)
+                                        # The heater accepted every value tested; leave as-is unless
+                                        # you're doing multi-controller experiments.
+
   heater_state:                         # optional text sensor: STARTUP/IDLE/HEATING/FAN/UNKNOWN
     name: "Espar Heater State"
   flame_active:                         # optional binary sensor: true while heater reports HEATING (0x2C4 D1=0x09)
@@ -151,6 +161,12 @@ espar_can:
   fault_text:                           # optional text sensor: "OK" or fault description
     name: "Espar Fault"
 ```
+
+---
+
+## After a heater power interruption (IDLE lock)
+
+If the heater's supply is interrupted (battery disconnect, low-voltage cutoff, pulled fuse), it often comes back in IDLE with fault byte D3 = `0x04` and **ignores commands**. *Espar Fault* shows `IDLE LOCK: D3=0x04 (heater ignoring commands)`. With `auto_clear_idle_lock: true` (default) the component releases it automatically about 45–60 s after the heater reconnects, and your HEAT/FAN request resumes. If all three attempts fail, *Espar Fault* says so. Then set the mode Off → Fan only (wait ~5 s) → Off, or power the heater off for a few minutes. Details: [#14](https://github.com/TrooperDuper/espar-airtronic-esphome/issues/14), [docs/fault-codes.md](../docs/fault-codes.md).
 
 ---
 

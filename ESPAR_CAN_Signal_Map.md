@@ -61,6 +61,8 @@ During IDLE after fault (D1=0x03):
 0x00  No fault (normal)
 0x20  Flame loss / fuel starvation — flame was active then suddenly extinguished
 0x40  Overtemperature — exhaust/outlet restricted, thermal cutout triggered
+0x04  Power-up lock (with D1=0x03 IDLE, not 0x0B) — after heater power interruption;
+      commands ignored until 0x54 goes FAN (>=5 s) -> IDLE. See docs/fault-codes.md
       (multiple bits may be set for concurrent faults — not yet confirmed)
 ```
 
@@ -182,7 +184,7 @@ Toggle D2 bit 0 and D3 bit 0 alternately:
 ```
 Simplest: just send `0D 10 83 B6 09 20 70 00` static at 100ms.
 
-**Controller identity (hypothesis):** D3–D5 look like a controller ID/serial — ours `82/83 B6 09`, another EasyStart Pro `D6/D7 74 04` (D3 bit 0 toggles in both). A different heater accepted our copied ID, so the heater doesn't appear to bind to one controller. Relevant to multi-controller / ADR work.
+**Controller identity (hypothesis):** D3–D5 look like a controller ID/serial — ours `82/83 B6 09`, another EasyStart Pro `D6/D7 74 04` (D3 bit 0 toggles in both). A different heater accepted our copied ID, and ours accepted made-up and MAC-derived IDs plus 0x62 D8 = F3 (2026-10-13), so neither field appears to be checked. Configurable via `controller_id`.
 
 ### ID: 0x65 — Periodic Status (every ~10s, send 4x burst)
 Cycle D3 through 01, 02, 03, 01... Counter (D1+D2) increments each set:

@@ -61,8 +61,9 @@
 |---|---|---|---|
 | `0x20` | bit 5 | Flame loss / fuel starvation | P000125–129, P00012A |
 | `0x40` | bit 6 | Overtemperature / exhaust blocked | P000115, P000116 |
+| `0x04` | bit 2 | **Power-up lock** — seen with D1=`0x03` (IDLE), not 0x0B, after a heater power interruption. Heater ignores HEAT/FAN until 0x54 goes FAN (≥5 s) → IDLE. See [fault-codes.md](fault-codes.md). | unknown |
 
-> Bits 0–4 and bit 7 have not been observed non-zero. Each likely maps to a different fault category. Confirmed via captures `Espar CAN-Bus outlet obstruction.csv` and `Espar CAN-Bus fuel line pinched.csv`.
+> Bits 0–1, 3–4 and bit 7 have not been observed non-zero. Each likely maps to a different fault category. Confirmed via captures `Espar CAN-Bus outlet obstruction.csv` and `Espar CAN-Bus fuel line pinched.csv`.
 
 **D2 sub-states during HEATING:**
 
@@ -184,7 +185,9 @@ Send every ~100ms. Simplest valid payload (static):
 
 The OEM controller toggles D2 and D3 bits across 4 states — static works fine.
 
-**Controller identity (hypothesis):** D3–D5 differ between controllers. Ours sends `82/83 B6 09`; another EasyStart Pro sends `D6/D7 74 04`. D3 bit 0 toggles in both. These bytes look like a controller ID/serial. A different heater accepted the component's copied ID (`82 B6 09`), so the heater doesn't appear to bind to a specific controller. Relevant to multi-controller / ADR work.
+**Controller identity (hypothesis):** D3–D5 differ between controllers. Ours sends `82/83 B6 09`; another EasyStart Pro sends `D6/D7 74 04`. D3 bit 0 toggles in both. These bytes look like a controller ID/serial. A different heater accepted the component's copied ID (`82 B6 09`), so the heater doesn't appear to bind to a specific controller.
+
+**Tested 2026-10-13 (B2L, WeAct only):** the heater accepted a made-up ID (`A4 5C 31`), a MAC-derived ID (`A8 97 D0`) and 0x62 D8 = `F3` instead of `F1`, both mid-session and after a cold start. Neither field appears to be checked. The ID is configurable via `controller_id` (default `0x82B609`). A unique ID alone probably won't let the WeAct coexist with a real Pro: both still transmit on the same arbitration IDs (0x54–0x57, 0x60D, 0x65). See [experiments/controller-id.md](experiments/controller-id.md).
 
 ---
 

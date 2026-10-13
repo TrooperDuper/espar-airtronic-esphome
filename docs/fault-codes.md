@@ -74,11 +74,14 @@ Two controlled fault captures (`Espar CAN-Bus outlet obstruction.csv`, `Espar CA
 | Fault active | 0x2C4 D1 | `0x0B` | Heater in fault state |
 | Fault code | 0x2C4 D3 | `0x20` (bit 5) | Flame loss / fuel starvation |
 | Fault code | 0x2C4 D3 | `0x40` (bit 6) | Overtemperature / exhaust blocked |
+| Power-up lock | 0x2C4 D3 (with D1=`0x03` IDLE) | `0x04` (bit 2) | Set after a heater power interruption; heater ignores HEAT/FAN until released (see below) |
 | Fault flag | 0x2C4 D2 | `0x08` | Set during active fault |
 
 **Post-fault behavior:** D3 persists with the fault code for ~26 seconds after D1 returns to IDLE (0x03). The ESPHome component handles this by latching the fault and clearing only when D3 returns to 0x00.
 
-**What's still unknown:** Bits 0–4 and bit 7 of D3 have never been observed non-zero. Each likely maps to a different fault category. See the open GitHub issue for the remaining capture targets.
+**Power-up lock — D3 = `0x04` in IDLE ([#14](https://github.com/TrooperDuper/espar-airtronic-esphome/issues/14)):** after an interruption of the heater's supply, the heater often (~2 of 3 power-ups) comes back in IDLE with D3 = `0x04` and **ignores HEAT and FAN commands**. It doesn't time out. It's released when the 0x54 command goes from a non-idle command back to IDLE: hold FAN (≥ 5 s), then IDLE, and D3 clears within ~200 ms at the FAN → IDLE edge. Short FAN pulses (600 ms) sent within ~2 s of power-up **failed** and left a harder lock that the normal sequence didn't release. A ~2.5 min power-off cleared that. The component detects the lock (*Espar Fault* = `IDLE LOCK: D3=0x04 (heater ignoring commands)`) and, with `auto_clear_idle_lock: true` (default), releases it automatically: wait 45 s, FAN 6 s, IDLE 5 s, up to 3 attempts. Verified 2/2 on attempt 1. The meaning of 0x04 (likely supply interruption / undervoltage) is unconfirmed; reading the OEM fault memory would give the P-code.
+
+**What's still unknown:** Bits 0–1, 3–4 and bit 7 of D3 have never been observed non-zero. Each likely maps to a different fault category. See the open GitHub issue for the remaining capture targets.
 
 See `ESPAR_CAN_Fault_Analysis.md` for the full capture methodology and frame-by-frame analysis.
 

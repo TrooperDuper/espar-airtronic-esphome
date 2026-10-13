@@ -8,6 +8,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **Heater ignored commands after a power interruption while reporting OK** ([#14](https://github.com/TrooperDuper/espar-airtronic-esphome/issues/14)). The heater often comes back in IDLE with D3 = `0x04` and ignores HEAT/FAN until 0x54 goes FAN → IDLE. The component now reports it (*Espar Fault* = `IDLE LOCK: …`) and releases it automatically (`auto_clear_idle_lock`, default on: 45 s wait, FAN 6 s, IDLE 5 s, up to 3 tries). Verified 2/2 on hardware.
+- Heartbeat-timeout underflow that caused connect/disconnect flapping (sample `now` after RX).
+- ESPHome 2026.5+ compatibility: ClimateTraits feature flags.
+
+### Added
+- `controller_id` and `init_0x62_byte` options (0x60D controller ID and last byte of init frame 0x62). Defaults unchanged. The heater accepted every value tested.
+- Every change of the 0x2C4 D3 fault byte is logged at WARN.
+- Example config: status LED colour actions set `effect: "None"`, so the red fault pulse stops once the fault clears.
+- 0x2C4 status also counts as heater liveness (not only the 0x625 heartbeat). A real EasyStart Pro's 0x54–0x57 frames are ignored instead of raised as unknown-ID faults.
+
 ### Changed
 - `flame_active` now follows the heater's HEATING state (0x2C4 D1=0x09) instead of D2 bit5. The raw D2 bit5 is exposed as a new optional diagnostic binary sensor `flag_0x20` (meaning unconfirmed; absent on a sea-level B2L — leading theory is altitude compensation). The YAML key `flame_active` is unchanged.
 
@@ -20,6 +31,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - 0x2C4 / 0x54 D5–D6 relabeled as a likely temperature echo (previously "counter"); no behavior change.
 - 0x60D D3–D5 documented as a likely controller ID/serial.
 - Unmapped heater state `0x01` noted (single frame at end of cooldown on another B2L).
+- D3 = `0x04` (power-up lock) added to the fault tables; controller-identity test results in `docs/experiments/controller-id.md`.
 
 ---
 

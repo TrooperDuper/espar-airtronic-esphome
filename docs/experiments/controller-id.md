@@ -1,6 +1,6 @@
 # Experiment — controller identity (0x60D ID and 0x62 last byte)
 
-**Branch:** `experiment/controller-id` (not merged; firmware for testing only)
+**Status:** done 2026-10-13. Options merged to `main` (`controller_id`, `init_0x62_byte`). The HA test buttons below are for further experiments only.
 
 ## Question
 
@@ -108,9 +108,15 @@ For each test, set the value, then:
 
 ## Results
 
+Maintainer's B2L, ~2,100 m, WeAct only, FAN used as the acceptance check (no ignition).
+
 | # | Setting | Runtime switch | Clean power-up | Notes |
 |---|---|---|---|---|
-| 0 | default | | | |
-| 1 | `A45C31` | | | |
-| 2 | MAC (`______`) | | | |
-| 3 | 0x62 `F3` | | | |
+| 0 | default `82B609 / F1` | pass | pass | baseline |
+| 1 | `A45C31` | pass | — | FAN in 300 ms after ID change |
+| 2 | MAC `A897D0` | — | pass (with 0x62 `F3`) | |
+| 3 | 0x62 `F3` | — | pass (with MAC ID) | |
+
+**Conclusion:** the heater doesn't appear to check the 0x60D ID or 0x62 D8.
+
+**Side finding:** cold starts frequently came up with D3 = `0x04` and the heater ignoring commands, **with the default identity too**, so it isn't caused by the identity. This became [#14](https://github.com/TrooperDuper/espar-airtronic-esphome/issues/14) (IDLE lock), now handled by the component.

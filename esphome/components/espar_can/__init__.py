@@ -87,7 +87,7 @@ CONFIG_SCHEMA = (
             #                   full stop/start cycle.  Draws ~4W continuous
             #                   battery power while paused.
             cv.Optional(CONF_PAUSE_MODE, default="off"): _validate_pause_mode,
-            # EXPERIMENT: controller identity. 24-bit ID in 0x60D D3–D5 and the
+            # Controller identity. 24-bit ID in 0x60D D3–D5 and the
             # last byte of init frame 0x62. Defaults reproduce the maintainer's Pro.
             cv.Optional(CONF_CONTROLLER_ID, default=0x82B609): cv.int_range(min=0, max=0xFFFFFF),
             cv.Optional(CONF_INIT_0X62_BYTE, default=0xF1): cv.hex_uint8_t,
