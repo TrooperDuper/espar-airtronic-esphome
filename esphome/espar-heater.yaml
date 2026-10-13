@@ -177,7 +177,7 @@ espar_can:
   flame_active:
     name: "Espar Heating"
     id: espar_flame_active
-    device_class: heat
+    device_class: running   # HA shows "Running / Not running" (heat would show "Hot / Normal")
 
   # Raw 0x2C4 D2 bit5. Previously used as "flame"; it doesn't appear on every
   # heater. Kept as a diagnostic so more data builds up across units/altitudes.
