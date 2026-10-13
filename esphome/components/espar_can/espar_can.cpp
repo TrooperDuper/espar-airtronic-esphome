@@ -671,7 +671,7 @@ void EsparCanComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "  Pause mode: %s", pause_mode_fan_ ? "fan (FAN_ONLY at setpoint)" : "off (IDLE at setpoint)");
   ESP_LOGCONFIG(TAG, "  Thermostat hysteresis: %.1f°C", HYSTERESIS_C);
   LOG_TEXT_SENSOR("  ",    "Heater State",     heater_state_sensor_);
-  LOG_BINARY_SENSOR("  ",  "Flame Active",     flame_sensor_);
+  LOG_BINARY_SENSOR("  ",  "Heating",          flame_sensor_);
   LOG_BINARY_SENSOR("  ",  "Status Flag 0x20", flag_0x20_sensor_);
   LOG_BINARY_SENSOR("  ",  "Heater Connected", connected_sensor_);
   LOG_TEXT_SENSOR("  ",    "Fault",            fault_sensor_);

@@ -38,7 +38,7 @@ This repository documents everything collected along the way — every raw captu
 
 - ✅ Full HEAT / FAN ONLY / OFF control from Home Assistant climate entity
 - ✅ Real-time heater state monitoring (STARTUP / HEATING / FAN / IDLE)
-- ✅ Heater burning sensor (follows the heater's HEATING state)
+- ✅ Heating sensor (follows the heater's HEATING state)
 - ✅ Temperature setpoint encoding confirmed at 66°F, 75°F, 78°F, and 80°F
 - ✅ Behavioral fault detection (failed starts, heartbeat loss, lockout)
 - ✅ CAN fault state decoded — `0x2C4 D1=0x0B` with named fault codes (flame loss, overtemperature)
