@@ -9,7 +9,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Changed
-- `flame_active` now follows the heater's HEATING state (0x2C4 D1=0x09) instead of D2 bit5. The raw D2 bit5 is exposed as a new optional diagnostic binary sensor `flag_0x20` (meaning unconfirmed; absent on a sea-level B2L — leading theory is altitude compensation). YAML key and entity name for `flame_active` are unchanged.
+- `flame_active` now follows the heater's HEATING state (0x2C4 D1=0x09) instead of D2 bit5. The raw D2 bit5 is exposed as a new optional diagnostic binary sensor `flag_0x20` (meaning unconfirmed; absent on a sea-level B2L — leading theory is altitude compensation). The YAML key `flame_active` is unchanged.
+
+### ⚠️ Breaking — entity rename
+- The example config renames the `flame_active` entity from **"Espar Flame Active"** to **"Espar Heating"** (it's on during the ignition ramp too, so "flame" overstated it). In Home Assistant this creates a new entity (`binary_sensor.espar_heating`) and leaves the old `binary_sensor.espar_flame_active` behind as an unavailable, orphaned entity. Delete it and update any automations/dashboards that used it. See **Upgrading** in `esphome/README.md` for step-by-step cleanup, including how to keep the old entity ID.
 - P000342 corrected to "invalid configuration — check ADR coding": multiple controllers are supported; the conflict is the WeAct cloning the EasyStart Pro's identity.
 - Status LED migrated from deprecated `neopixelbus` to `esp32_rmt_led_strip`.
 

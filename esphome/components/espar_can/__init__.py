@@ -5,7 +5,8 @@ Trooper camper project.  WeAct CAN485 V1.0 (ESP32-D0WD-V3).
 Exposes:
   - climate entity  (HEAT / FAN_ONLY / OFF) with external current-temp sensor
   - text_sensor     heater_state  ("STARTUP" / "IDLE" / "HEATING" / "FAN" / "UNKNOWN")
-  - binary_sensor   flame_active  (true while heater state D1=0x09 HEATING)
+  - binary_sensor   flame_active  ("Espar Heating": true while heater state D1=0x09 HEATING,
+                                   including ignition)
   - binary_sensor   flag_0x20     (raw 0x2C4 D2 bit5 — diagnostic, meaning unconfirmed)
   - binary_sensor   heater_connected  (0x625 heartbeat present)
   - text_sensor     fault_text    (human-readable fault / "OK")

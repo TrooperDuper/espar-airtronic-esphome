@@ -143,7 +143,7 @@ espar_can:
   heater_state:                         # optional text sensor: STARTUP/IDLE/HEATING/FAN/UNKNOWN
     name: "Espar Heater State"
   flame_active:                         # optional binary sensor: true while heater reports HEATING (0x2C4 D1=0x09)
-    name: "Espar Flame Active"
+    name: "Espar Heating"
   flag_0x20:                            # optional diagnostic: raw 0x2C4 D2 bit5, meaning unconfirmed
     name: "Espar Status Flag 0x20"
   heater_connected:                     # optional binary sensor: true when 0x625 heartbeat present
@@ -178,7 +178,7 @@ The `Espar CAN Standby` switch (defined in `espar-heater.yaml`) suspends all out
 |---|---|---|
 | `climate.espar_heater` | Climate | Main control entity |
 | `sensor.espar_heater_state` | Text sensor | STARTUP / IDLE / HEATING / FAN / UNKNOWN |
-| `binary_sensor.espar_flame_active` | Binary sensor | True while the heater reports HEATING (0x2C4 D1=0x09) |
+| `binary_sensor.espar_heating` | Binary sensor | True while the heater reports HEATING (0x2C4 D1=0x09), including the ignition ramp — not a combustion confirmation. YAML key: `flame_active`. Formerly `binary_sensor.espar_flame_active` (see Upgrading below). |
 | `binary_sensor.espar_status_flag_0x20` | Binary sensor | Raw 0x2C4 D2 bit5 — diagnostic, meaning unconfirmed |
 | `binary_sensor.espar_connected` | Binary sensor | True when 0x625 heartbeat present |
 | `sensor.espar_fault` | Text sensor | "OK" or fault description string |
@@ -187,6 +187,32 @@ The `Espar CAN Standby` switch (defined in `espar-heater.yaml`) suspends all out
 | `button.restart_espar_controller` | Button | Restart the ESP32 (required for initial boot sync) |
 
 > **Variant note:** `binary_sensor.espar_connected` latches on the heater's `0x625` heartbeat frame. This was validated on the **B2L (gasoline)** Airtronic S3; on other variants such as the diesel **D2L**, the heartbeat frame ID or cadence may differ, so connection detection may not behave identically and could need adjustment.
+
+---
+
+## Upgrading
+
+### "Espar Flame Active" renamed to "Espar Heating" (Unreleased)
+
+The `flame_active` binary sensor now follows the heater's HEATING state (`0x2C4 D1=0x09`) rather than `D2` bit 5. HEATING starts within ~140 ms of the heat command — before the glow plug has lit anything — so "flame active" overstated it. The example config now names it **"Espar Heating"**.
+
+The YAML key is still `flame_active`, so your config keeps validating. But Home Assistant derives an ESPHome entity's identity from its **name**, so renaming it creates a new entity and orphans the old one:
+
+| | Entity ID (default) | After upgrade |
+|---|---|---|
+| Old | `binary_sensor.espar_flame_active` | Stays in HA as **unavailable** ("no longer being provided by the esphome integration") |
+| New | `binary_sensor.espar_heating` | Created on first connect after flashing |
+
+Your exact IDs may differ if you renamed entities or your device name is prefixed onto them; check **Settings → Devices & services → ESPHome → Espar Heater**.
+
+**To upgrade:**
+
+1. In your YAML, change `name: "Espar Flame Active"` to `name: "Espar Heating"` under `flame_active:` and flash. (Skip this step and keep the old name if you'd rather not migrate. The sensor's behavior changes either way; only the name differs.)
+2. In HA, go to **Settings → Devices & services → Entities**, search for `espar_flame_active`, open it, and choose **Delete** (it shows as unavailable/not provided). Or select it and use **Remove selected**.
+3. Update anything that referenced the old entity: automations, scripts, dashboards, template sensors. HA's **Repairs** panel and the entity's *Related* tab show what still points at it.
+4. Optional: to keep your automations untouched instead of editing them, delete the old entity first (step 2), then open the new **Espar Heating** entity's settings and change its entity ID to `binary_sensor.espar_flame_active`. Its long-term statistics history starts fresh either way.
+
+The diagnostic `flag_0x20` sensor ("Espar Status Flag 0x20") is new and only appears if you add it to your YAML.
 
 ---
 

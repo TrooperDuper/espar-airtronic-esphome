@@ -170,9 +170,12 @@ espar_can:
                   blue: 0%
                   brightness: 15%
 
-  # True while the heater reports HEATING (0x2C4 D1=0x09).
+  # True while the heater reports HEATING (0x2C4 D1=0x09) — includes the
+  # ignition ramp, so it turns on before combustion is established.
+  # YAML key stays `flame_active` for compatibility; entity was renamed from
+  # "Espar Flame Active" — see "Upgrading" in esphome/README.md.
   flame_active:
-    name: "Espar Flame Active"
+    name: "Espar Heating"
     id: espar_flame_active
     device_class: heat
 
