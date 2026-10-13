@@ -39,6 +39,7 @@ CONF_CURRENT_TEMPERATURE_SENSOR = "current_temperature_sensor"
 CONF_CABIN_TEMP_UNIT            = "cabin_temp_unit"
 CONF_PAUSE_MODE                 = "pause_mode"
 CONF_CONTROLLER_ID              = "controller_id"
+CONF_AUTO_CLEAR_IDLE_LOCK       = "auto_clear_idle_lock"
 CONF_INIT_0X62_BYTE             = "init_0x62_byte"
 CONF_HEATER_STATE               = "heater_state"
 CONF_FLAME_ACTIVE               = "flame_active"
@@ -90,6 +91,9 @@ CONFIG_SCHEMA = (
             # last byte of init frame 0x62. Defaults reproduce the maintainer's Pro.
             cv.Optional(CONF_CONTROLLER_ID, default=0x82B609): cv.int_range(min=0, max=0xFFFFFF),
             cv.Optional(CONF_INIT_0X62_BYTE, default=0xF1): cv.hex_uint8_t,
+            # After a power interruption the heater sits in IDLE with D3≠0 and
+            # ignores commands. When true, send a FAN→IDLE pulse to release it.
+            cv.Optional(CONF_AUTO_CLEAR_IDLE_LOCK, default=True): cv.boolean,
             # Optional entity outputs
             cv.Optional(CONF_HEATER_STATE):     text_sensor.text_sensor_schema(),
             cv.Optional(CONF_FLAME_ACTIVE):     binary_sensor.binary_sensor_schema(),
@@ -115,6 +119,7 @@ async def to_code(config):
     cg.add(var.set_pause_mode_fan(config[CONF_PAUSE_MODE] == "fan"))
     cg.add(var.set_controller_id(config[CONF_CONTROLLER_ID]))
     cg.add(var.set_init_0x62_byte(config[CONF_INIT_0X62_BYTE]))
+    cg.add(var.set_auto_clear_idle_lock(config[CONF_AUTO_CLEAR_IDLE_LOCK]))
 
     if CONF_CURRENT_TEMPERATURE_SENSOR in config:
         sens = await cg.get_variable(config[CONF_CURRENT_TEMPERATURE_SENSOR])

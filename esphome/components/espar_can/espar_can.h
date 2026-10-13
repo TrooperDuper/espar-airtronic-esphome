@@ -76,6 +76,10 @@ static constexpr uint32_t STARTUP_TIMEOUT_MS    = 90000;  // stuck in STARTUP st
 static constexpr uint32_t HEAT_CONFIRM_MS       = 30000;  // HEAT cmd but no HEATING state
 static constexpr uint8_t  MAX_FAILED_STARTS     =    10;  // → lockout
 static constexpr float    HYSTERESIS_C          =  0.3f;  // thermostat dead-band
+static constexpr uint32_t IDLE_LOCK_PULSE_MS    =   600;  // FAN pulse length (3 cmd frames)
+static constexpr uint32_t IDLE_LOCK_SETTLE_MS   =  1500;  // forced IDLE after the pulse
+static constexpr uint32_t IDLE_LOCK_RETRY_MS    =  5000;  // gap between attempts
+static constexpr uint8_t  IDLE_LOCK_MAX_TRIES   =     3;
 
 // ── GPIO ─────────────────────────────────────────────────────────────────
 static constexpr gpio_num_t CAN_TX_PIN = GPIO_NUM_27;
@@ -98,6 +102,7 @@ class EsparCanComponent : public climate::Climate, public Component {
   void set_heat_setpoint_f(float f)                         { heat_setpoint_f_ = f; }
   void set_cabin_temp_fahrenheit(bool f)                    { cabin_temp_fahrenheit_ = f; }
   void set_pause_mode_fan(bool f)                           { pause_mode_fan_ = f; }
+  void set_auto_clear_idle_lock(bool b)                     { auto_clear_idle_lock_ = b; }
   void set_tx_standby(bool s);
   // EXPERIMENT (controller identity): 24-bit ID sent in 0x60D D3–D5, and the
   // last byte of init frame 0x62. Changing either at runtime re-runs the init
@@ -122,6 +127,7 @@ class EsparCanComponent : public climate::Climate, public Component {
   void send_heartbeat_();
   void send_command_group_();
   void handle_status_burst_(uint32_t now);
+  void handle_idle_lock_(uint32_t now);
 
   // ── RX helpers ────────────────────────────────────────────────────────
   void handle_rx_();
@@ -181,6 +187,19 @@ class EsparCanComponent : public climate::Climate, public Component {
   bool     flame_active_{false};
   bool     flag_0x20_{false};
   bool     heater_connected_{false};
+
+  // ── IDLE lock (D1=IDLE with D3≠0, not following a 0x0B fault) ─────────
+  // Seen after every heater power interruption (D3=0x04): the heater ignores
+  // HEAT/FAN until 0x54 goes from a non-idle command back to IDLE. We detect
+  // it and send a short FAN→IDLE pulse to release it.
+  bool     auto_clear_idle_lock_{true};
+  bool     post_fault_window_{false};  // set on D1=0x0B; D3 then lingers in IDLE
+  bool     idle_lock_{false};
+  uint8_t  idle_lock_phase_{0};        // 0=wait, 1=pulse FAN, 2=force IDLE
+  uint8_t  idle_lock_attempts_{0};
+  uint32_t idle_lock_t_{0};
+  uint32_t idle_lock_next_try_{0};
+  bool     idle_lock_gave_up_{false};
   uint32_t heater_last_seen_{0};
   bool     driver_installed_{false};
 

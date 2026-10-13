@@ -96,6 +96,9 @@ void EsparCanComponent::loop() {
   // ── 0x65 status burst @ 10s ─────────────────────────────────────────
   handle_status_burst_(now);
 
+  // ── IDLE lock release (D3≠0 in IDLE after power interruption) ───────
+  handle_idle_lock_(now);
+
   // ── Heartbeat timeout: heater went offline ────────────────────────────
   if (heater_connected_ && (now - heater_last_seen_) > HEARTBEAT_TIMEOUT_MS) {
     heater_connected_ = false;
@@ -406,6 +409,7 @@ void EsparCanComponent::parse_0x2C4_(const twai_message_t &msg) {
   if (new_state == HEATER_STATE_FAULT && heater_d1_state_ != HEATER_STATE_FAULT) {
     // First frame of fault state — command idle and report immediately
     ESP_LOGE(TAG, "HEATER FAULT detected! D1=0x0B D2=0x%02X FaultCode=0x%02X", new_sub, new_fault_code);
+    post_fault_window_ = true;
     cmd_heating_ = false;
     cmd_fan_     = false;
 
@@ -429,12 +433,37 @@ void EsparCanComponent::parse_0x2C4_(const twai_message_t &msg) {
 
   // ── Post-fault code still clearing (D1=IDLE but D3 non-zero, ~26 s window) ──
   if (new_state == HEATER_STATE_IDLE && new_fault_code != HEATER_FAULT_NONE
-      && heater_fault_code_ != HEATER_FAULT_NONE) {
+      && heater_fault_code_ != HEATER_FAULT_NONE && post_fault_window_) {
     ESP_LOGD(TAG, "Fault code 0x%02X still clearing in IDLE (~26 s window)", new_fault_code);
   }
+
+  // ── IDLE lock: D3≠0 in IDLE without a preceding 0x0B fault ──────────
+  // Seen after every heater power interruption (D3=0x04). The heater ignores
+  // HEAT/FAN until 0x54 goes non-idle → IDLE. Report it; handle_idle_lock_()
+  // releases it.
+  if (new_state == HEATER_STATE_IDLE && new_fault_code != HEATER_FAULT_NONE
+      && !post_fault_window_ && !idle_lock_) {
+    idle_lock_          = true;
+    idle_lock_phase_    = 0;
+    idle_lock_attempts_ = 0;
+    idle_lock_gave_up_  = false;
+    idle_lock_next_try_ = millis();
+    char buf[64];
+    snprintf(buf, sizeof(buf), "IDLE LOCK: D3=0x%02X (heater ignoring commands)", new_fault_code);
+    ESP_LOGW(TAG, "%s%s", buf, auto_clear_idle_lock_ ? " — auto-clearing" : "");
+    publish_fault_(buf);
+  }
+
   if (new_state == HEATER_STATE_IDLE && new_fault_code == HEATER_FAULT_NONE
       && heater_fault_code_ != HEATER_FAULT_NONE) {
-    ESP_LOGI(TAG, "Fault code cleared — heater returned to normal IDLE");
+    if (idle_lock_) {
+      ESP_LOGI(TAG, "IDLE lock released after %u attempt(s)", (unsigned) idle_lock_attempts_);
+    } else {
+      ESP_LOGI(TAG, "Fault code cleared — heater returned to normal IDLE");
+    }
+    idle_lock_         = false;
+    idle_lock_phase_   = 0;
+    post_fault_window_ = false;
     publish_fault_("OK");
   }
 
@@ -637,7 +666,13 @@ void EsparCanComponent::send_command_group_() {
 
   uint8_t d54[8] = {};
 
-  if (cmd_heating_ && !locked_out_) {
+  if (idle_lock_phase_ == 1) {
+    // IDLE-lock release pulse: FAN (heater ignores it while locked)
+    d54[0] = 0x01; d54[1] = 0x02; d54[2] = 0xFE; d54[3] = 0xFF;
+  } else if (idle_lock_phase_ == 2) {
+    // …then back to IDLE — the non-idle → IDLE edge releases the lock
+    d54[0] = 0x00; d54[1] = 0x00; d54[2] = 0xFE; d54[3] = 0xFF;
+  } else if (cmd_heating_ && !locked_out_) {
     // HEAT mode — D2=0x05 (heating), D3/D4 = temperature word LE
     d54[0] = 0x01;
     d54[1] = 0x05;
@@ -668,6 +703,45 @@ void EsparCanComponent::send_command_group_() {
   send_frame_(0x55, d55, 8);
   send_frame_(0x56, d56, 8);
   send_frame_(0x57, d57, 8);
+}
+
+// IDLE-lock release state machine. Pulses FAN for IDLE_LOCK_PULSE_MS, forces
+// IDLE for IDLE_LOCK_SETTLE_MS, and retries up to IDLE_LOCK_MAX_TRIES times.
+// The user's HEAT/FAN command resumes automatically once the lock clears.
+void EsparCanComponent::handle_idle_lock_(uint32_t now) {
+  if (!idle_lock_ || !auto_clear_idle_lock_ || tx_standby_ || !heater_connected_) {
+    idle_lock_phase_ = 0;
+    return;
+  }
+  switch (idle_lock_phase_) {
+    case 0:
+      if (idle_lock_attempts_ >= IDLE_LOCK_MAX_TRIES) {
+        if (!idle_lock_gave_up_) {
+          idle_lock_gave_up_ = true;
+          ESP_LOGE(TAG, "IDLE lock not released after %u attempts — set mode Off then On, or power-cycle the heater",
+                   (unsigned) idle_lock_attempts_);
+          publish_fault_("IDLE LOCK: auto-clear failed — toggle Off/On or power-cycle heater");
+        }
+        return;
+      }
+      if (static_cast<int32_t>(now - idle_lock_next_try_) >= 0) {
+        idle_lock_attempts_++;
+        idle_lock_phase_ = 1;
+        idle_lock_t_     = now;
+        ESP_LOGW(TAG, "IDLE lock: release attempt %u/%u (FAN pulse → IDLE)",
+                 (unsigned) idle_lock_attempts_, (unsigned) IDLE_LOCK_MAX_TRIES);
+      }
+      break;
+    case 1:
+      if (now - idle_lock_t_ >= IDLE_LOCK_PULSE_MS) { idle_lock_phase_ = 2; idle_lock_t_ = now; }
+      break;
+    case 2:
+      if (now - idle_lock_t_ >= IDLE_LOCK_SETTLE_MS) {
+        idle_lock_phase_    = 0;
+        idle_lock_next_try_ = now + IDLE_LOCK_RETRY_MS;
+      }
+      break;
+  }
 }
 
 // 0x65 periodic status burst — 4 frames per group, D3 cycles 01→02→03
@@ -717,6 +791,7 @@ void EsparCanComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "  Controller ID (0x60D D3-D5): %02X %02X %02X | 0x62 D8: 0x%02X",
                 ctrl_id_[0], ctrl_id_[1], ctrl_id_[2], init_62_last_);
   ESP_LOGCONFIG(TAG, "  Thermostat hysteresis: %.1f°C", HYSTERESIS_C);
+  ESP_LOGCONFIG(TAG, "  Auto-clear IDLE lock: %s", auto_clear_idle_lock_ ? "yes" : "no");
   LOG_TEXT_SENSOR("  ",    "Heater State",     heater_state_sensor_);
   LOG_BINARY_SENSOR("  ",  "Heating",          flame_sensor_);
   LOG_BINARY_SENSOR("  ",  "Status Flag 0x20", flag_0x20_sensor_);
