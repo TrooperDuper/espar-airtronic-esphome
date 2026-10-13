@@ -401,6 +401,12 @@ void EsparCanComponent::parse_0x2C4_(const twai_message_t &msg) {
   // Always update counter — used in our TX frames
   heater_ctr_ = new_ctr;
 
+  // Log every change of the D3 fault byte (diagnostic; low rate)
+  if (new_fault_code != heater_fault_code_) {
+    ESP_LOGW(TAG, "D3 fault byte 0x%02X -> 0x%02X (D1=0x%02X D2=0x%02X)",
+             heater_fault_code_, new_fault_code, new_state, new_sub);
+  }
+
   bool state_changed = (new_state != heater_d1_state_) || (new_flame != flame_active_)
                      || (new_fault_code != heater_fault_code_)
                      || (new_flag_0x20 != flag_0x20_);
@@ -447,7 +453,7 @@ void EsparCanComponent::parse_0x2C4_(const twai_message_t &msg) {
     idle_lock_phase_    = 0;
     idle_lock_attempts_ = 0;
     idle_lock_gave_up_  = false;
-    idle_lock_next_try_ = millis();
+    idle_lock_next_try_ = millis() + IDLE_LOCK_FIRST_DELAY_MS;
     char buf[64];
     snprintf(buf, sizeof(buf), "IDLE LOCK: D3=0x%02X (heater ignoring commands)", new_fault_code);
     ESP_LOGW(TAG, "%s%s", buf, auto_clear_idle_lock_ ? " — auto-clearing" : "");

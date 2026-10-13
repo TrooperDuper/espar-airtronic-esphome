@@ -76,9 +76,13 @@ static constexpr uint32_t STARTUP_TIMEOUT_MS    = 90000;  // stuck in STARTUP st
 static constexpr uint32_t HEAT_CONFIRM_MS       = 30000;  // HEAT cmd but no HEATING state
 static constexpr uint8_t  MAX_FAILED_STARTS     =    10;  // → lockout
 static constexpr float    HYSTERESIS_C          =  0.3f;  // thermostat dead-band
-static constexpr uint32_t IDLE_LOCK_PULSE_MS    =   600;  // FAN pulse length (3 cmd frames)
-static constexpr uint32_t IDLE_LOCK_SETTLE_MS   =  1500;  // forced IDLE after the pulse
-static constexpr uint32_t IDLE_LOCK_RETRY_MS    =  5000;  // gap between attempts
+// Timings mimic the manual sequence that released the lock every time:
+// FAN held ≥5 s, then IDLE. Short early pulses (600 ms, ~2 s after power-up)
+// failed and left the lock harder to clear, so wait for the heater to settle.
+static constexpr uint32_t IDLE_LOCK_FIRST_DELAY_MS = 15000;  // after lock detected
+static constexpr uint32_t IDLE_LOCK_PULSE_MS    =  6000;  // FAN held
+static constexpr uint32_t IDLE_LOCK_SETTLE_MS   =  5000;  // forced IDLE after the pulse
+static constexpr uint32_t IDLE_LOCK_RETRY_MS    = 20000;  // gap between attempts
 static constexpr uint8_t  IDLE_LOCK_MAX_TRIES   =     3;
 
 // ── GPIO ─────────────────────────────────────────────────────────────────
