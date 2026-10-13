@@ -4,7 +4,7 @@ Trooper camper project.  WeAct CAN485 V1.0 (ESP32-D0WD-V3).
 
 Exposes:
   - climate entity  (HEAT / FAN_ONLY / OFF) with external current-temp sensor
-  - text_sensor     heater_state  ("STARTUP" / "IDLE" / "HEATING" / "FAN" / "UNKNOWN")
+  - text_sensor     heater_state  ("STARTUP" / "IDLE" / "HEATING" / "FAN" / "COOLDOWN" / "UNKNOWN")
   - binary_sensor   flame_active  ("Espar Heating": true while heater state D1=0x09 HEATING,
                                    including ignition)
   - binary_sensor   flag_0x20     (raw 0x2C4 D2 bit5 — diagnostic, meaning unconfirmed)
@@ -40,6 +40,10 @@ CONF_CABIN_TEMP_UNIT            = "cabin_temp_unit"
 CONF_PAUSE_MODE                 = "pause_mode"
 CONF_CONTROLLER_ID              = "controller_id"
 CONF_AUTO_CLEAR_IDLE_LOCK       = "auto_clear_idle_lock"
+CONF_HYSTERESIS                 = "hysteresis"
+CONF_MIN_RUN_TIME               = "min_run_time"
+CONF_MIN_OFF_TIME               = "min_off_time"
+CONF_MAX_STARTS_PER_HOUR        = "max_starts_per_hour"
 CONF_INIT_0X62_BYTE             = "init_0x62_byte"
 CONF_HEATER_STATE               = "heater_state"
 CONF_FLAME_ACTIVE               = "flame_active"
@@ -94,6 +98,14 @@ CONFIG_SCHEMA = (
             # After a power interruption the heater sits in IDLE with D3≠0 and
             # ignores commands. When true, send a FAN→IDLE pulse to release it.
             cv.Optional(CONF_AUTO_CLEAR_IDLE_LOCK, default=True): cv.boolean,
+            # Anti-short-cycle (issue #9). Gate only the thermostat's own
+            # on/off decisions; user mode changes and faults act immediately.
+            # hysteresis: dead-band below target, in cabin_temp_unit degrees
+            #             (default 0.3 °C ≈ 0.54 °F).
+            cv.Optional(CONF_HYSTERESIS): cv.float_range(min=0.0, max=5.0),
+            cv.Optional(CONF_MIN_RUN_TIME, default="0s"): cv.positive_time_period_seconds,
+            cv.Optional(CONF_MIN_OFF_TIME, default="0s"): cv.positive_time_period_seconds,
+            cv.Optional(CONF_MAX_STARTS_PER_HOUR, default=0): cv.int_range(min=0, max=12),
             # Optional entity outputs
             cv.Optional(CONF_HEATER_STATE):     text_sensor.text_sensor_schema(),
             cv.Optional(CONF_FLAME_ACTIVE):     binary_sensor.binary_sensor_schema(),
@@ -120,6 +132,14 @@ async def to_code(config):
     cg.add(var.set_controller_id(config[CONF_CONTROLLER_ID]))
     cg.add(var.set_init_0x62_byte(config[CONF_INIT_0X62_BYTE]))
     cg.add(var.set_auto_clear_idle_lock(config[CONF_AUTO_CLEAR_IDLE_LOCK]))
+    if CONF_HYSTERESIS in config:
+        h = config[CONF_HYSTERESIS]
+        if config[CONF_CABIN_TEMP_UNIT] == "fahrenheit":
+            h = h * 5.0 / 9.0
+        cg.add(var.set_hysteresis_c(h))
+    cg.add(var.set_min_run_time_s(config[CONF_MIN_RUN_TIME].total_seconds))
+    cg.add(var.set_min_off_time_s(config[CONF_MIN_OFF_TIME].total_seconds))
+    cg.add(var.set_max_starts_per_hour(config[CONF_MAX_STARTS_PER_HOUR]))
 
     if CONF_CURRENT_TEMPERATURE_SENSOR in config:
         sens = await cg.get_variable(config[CONF_CURRENT_TEMPERATURE_SENSOR])

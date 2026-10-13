@@ -127,6 +127,15 @@ espar_can:
   #          mode, ~4W continuous).  Avoids repeated full stop/start cycles.
   pause_mode: "off"   # must be quoted — bare off/on are YAML booleans
 
+  # Anti-short-cycle (optional, all off by default — see issue #9).
+  # Limit how often the thermostat starts the heater. User mode/setpoint
+  # changes and faults always act immediately.
+  # hysteresis: 1.0             # degrees below target before restarting
+  #                             # (cabin_temp_unit units; default 0.3 °C ≈ 0.5 °F)
+  # min_run_time: 15min         # once lit, keep heating at least this long
+  # min_off_time: 10min         # after stopping, wait at least this long
+  # max_starts_per_hour: 3      # hard cap on thermostat starts
+
   # Sensor that provides current cabin temperature to the climate entity.
   # Remove this line if you have no temperature sensor — the component will
   # then heat continuously when mode=HEAT (safe; heater's thermocouple limits it).
@@ -171,6 +180,17 @@ espar_can:
                   green: 100%
                   blue: 0%
                   brightness: 15%
+                  effect: "None"
+        - if:
+            condition:
+              lambda: 'return x == "COOLDOWN";'
+            then:
+              - light.turn_on:
+                  id: status_led
+                  red: 100%
+                  green: 10%
+                  blue: 0%
+                  brightness: 20%
                   effect: "None"
 
   # True while the heater reports HEATING (0x2C4 D1=0x09) — includes the

@@ -75,7 +75,9 @@ static constexpr uint32_t HEARTBEAT_TIMEOUT_MS  = 10000;  // loss of 0x625 (heat
 static constexpr uint32_t STARTUP_TIMEOUT_MS    = 90000;  // stuck in STARTUP state
 static constexpr uint32_t HEAT_CONFIRM_MS       = 30000;  // HEAT cmd but no HEATING state
 static constexpr uint8_t  MAX_FAILED_STARTS     =    10;  // → lockout
-static constexpr float    HYSTERESIS_C          =  0.3f;  // thermostat dead-band
+static constexpr float    HYSTERESIS_C          =  0.3f;  // default thermostat dead-band
+static constexpr uint32_t THERMO_EVAL_MS        =  5000;  // periodic re-evaluation (anti-short-cycle timers)
+static constexpr uint32_t FOREIGN_CTRL_TIMEOUT_MS = 5000; // other controller considered gone after this
 // Timings mimic the manual sequence that released the lock every time:
 // FAN held ≥5 s, then IDLE. Short early pulses (600 ms, ~2 s after power-up)
 // failed and left the lock harder to clear, so wait for the heater to settle.
@@ -107,6 +109,11 @@ class EsparCanComponent : public climate::Climate, public Component {
   void set_cabin_temp_fahrenheit(bool f)                    { cabin_temp_fahrenheit_ = f; }
   void set_pause_mode_fan(bool f)                           { pause_mode_fan_ = f; }
   void set_auto_clear_idle_lock(bool b)                     { auto_clear_idle_lock_ = b; }
+  // Anti-short-cycle (issue #9). Times in seconds; 0 disables each limit.
+  void set_hysteresis_c(float h)                            { hysteresis_c_ = h; }
+  void set_min_run_time_s(uint32_t s)                       { min_run_ms_ = s * 1000UL; }
+  void set_min_off_time_s(uint32_t s)                       { min_off_ms_ = s * 1000UL; }
+  void set_max_starts_per_hour(uint8_t n)                   { max_starts_per_hour_ = n; }
   void set_tx_standby(bool s);
   // Controller identity: 24-bit ID sent in 0x60D D3–D5, and the
   // last byte of init frame 0x62. Changing either at runtime re-runs the init
@@ -183,6 +190,36 @@ class EsparCanComponent : public climate::Climate, public Component {
   // accepted any ID tested (incl. made-up and MAC-derived) and doesn't check 0x62 D8.
   uint8_t ctrl_id_[3]{0x82, 0xB6, 0x09};  // 0x60D D3–D5
   uint8_t init_62_last_{0xF1};            // 0x62 D8
+
+  // ── Anti-short-cycle (thermostat-driven transitions only) ─────────────
+  // User mode changes (OFF / FAN / HEAT from HA) and faults always act
+  // immediately; these limits only gate the thermostat's own on/off decisions.
+  float    hysteresis_c_{0.3f};        // dead-band below target before restarting
+  uint32_t min_run_ms_{0};             // keep heating at least this long once started
+  uint32_t min_off_ms_{0};             // wait at least this long after a stop
+  uint8_t  max_starts_per_hour_{0};    // cap on thermostat-initiated starts
+  static constexpr uint8_t START_LOG_LEN = 12;
+  uint32_t start_log_[START_LOG_LEN]{};  // millis() of recent thermostat starts (ring)
+  uint8_t  start_log_idx_{0};
+  uint32_t heat_on_ms_{0};             // when the current HEAT command began
+  uint32_t heat_off_ms_{0};            // when the last HEAT command ended
+  bool     heat_off_valid_{false};
+  bool     user_mode_change_{false};   // next evaluation follows a user mode/setpoint change
+  uint8_t  ascs_hold_reason_{0};       // last logged gating reason (0=none)
+  uint32_t t_thermo_eval_{0};
+  uint8_t  starts_last_hour_(uint32_t now) const;
+  void     record_start_(uint32_t now);
+  void     log_ascs_hold_(uint8_t reason, uint32_t wait_ms);
+
+  // ── Other controller on the bus (e.g. a real EasyStart Pro) ───────────
+  bool     foreign_ctrl_present_{false};
+  bool     foreign_fault_published_{false};
+  uint32_t foreign_ctrl_last_ms_{0};
+  uint8_t  foreign_ctrl_id_[3]{};
+  void     note_foreign_controller_(const twai_message_t &msg);
+
+  // ── Cooldown (D1=IDLE, D2 bit3 set, D3=0) ─────────────────────────────
+  bool     cooldown_{false};
   void restart_handshake_();
 
   // ── CAN state ────────────────────────────────────────────────────────

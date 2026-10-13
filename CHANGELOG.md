@@ -8,6 +8,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added (after #14)
+- **COOLDOWN heater state:** D1=IDLE with D2 bit 3 and no fault code = after-run blower. *Espar Heater State* shows `COOLDOWN` and the climate action shows *Fan* until it's truly idle. The example YAML adds a dim-orange LED colour.
+- **Anti-short-cycle options (#9):** `hysteresis`, `min_run_time`, `min_off_time`, `max_starts_per_hour`. All off by default. They gate only thermostat-driven starts and stops; HA mode/setpoint changes and faults act immediately. The thermostat is re-evaluated every 5 s so timers expire on their own.
+- **Other controller on the bus:** a foreign 0x60D heartbeat while the WeAct is transmitting sets *Espar Fault* = `OTHER CONTROLLER ON BUS — enable CAN Standby` (cleared when it disappears or Standby is turned on). 0x60D, 0x65 and the init-burst IDs are now treated like 0x54–0x57: logged at debug, not raised as unknown-ID faults.
+
 ### Fixed
 - **Heater ignored commands after a power interruption while reporting OK** ([#14](https://github.com/TrooperDuper/espar-airtronic-esphome/issues/14)). The heater often comes back in IDLE with D3 = `0x04` and ignores HEAT/FAN until 0x54 goes FAN → IDLE. The component now reports it (*Espar Fault* = `IDLE LOCK: …`) and releases it automatically (`auto_clear_idle_lock`, default on: 45 s wait, FAN 6 s, IDLE 5 s, up to 3 tries). Verified 2/2 on hardware.
 - Heartbeat-timeout underflow that caused connect/disconnect flapping (sample `now` after RX).

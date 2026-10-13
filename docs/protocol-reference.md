@@ -65,6 +65,8 @@
 
 > Bits 0–1, 3–4 and bit 7 have not been observed non-zero. Each likely maps to a different fault category. Confirmed via captures `Espar CAN-Bus outlet obstruction.csv` and `Espar CAN-Bus fuel line pinched.csv`.
 
+**D2 during IDLE (D1=`0x03`):** `0x08` = cooldown / after-run (blower purging, ~4 min after heating; seen on two B2Ls), then `0x00` = truly idle. The component reports `COOLDOWN` when D1=`0x03`, D2 bit 3 set and D3=`0x00`.
+
 **D2 sub-states during HEATING:**
 
 | D2 value | Meaning |
