@@ -79,7 +79,7 @@ static constexpr float    HYSTERESIS_C          =  0.3f;  // thermostat dead-ban
 // Timings mimic the manual sequence that released the lock every time:
 // FAN held ≥5 s, then IDLE. Short early pulses (600 ms, ~2 s after power-up)
 // failed and left the lock harder to clear, so wait for the heater to settle.
-static constexpr uint32_t IDLE_LOCK_FIRST_DELAY_MS = 15000;  // after lock detected
+static constexpr uint32_t IDLE_LOCK_FIRST_DELAY_MS = 45000;  // after lock detected (lets HA reconnect first)
 static constexpr uint32_t IDLE_LOCK_PULSE_MS    =  6000;  // FAN held
 static constexpr uint32_t IDLE_LOCK_SETTLE_MS   =  5000;  // forced IDLE after the pulse
 static constexpr uint32_t IDLE_LOCK_RETRY_MS    = 20000;  // gap between attempts
