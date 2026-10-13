@@ -561,12 +561,32 @@ void EsparCanComponent::set_tx_standby(bool s) {
     cmd_fan_          = false;
   } else {
     ESP_LOGI(TAG, "CAN TX standby OFF — re-running init burst");
-    // Re-establish connection with the heater
-    heater_connected_ = false;
-    heater_ctr_       = 0xFFFE;
-    init_done_        = false;
-    t_init_last_      = millis() - INIT_RESEND_MS;  // fire immediately next loop
+    restart_handshake_();
   }
+}
+
+// Re-establish connection with the heater (fresh init burst on next loop).
+void EsparCanComponent::restart_handshake_() {
+  heater_connected_ = false;
+  heater_ctr_       = 0xFFFE;
+  init_done_        = false;
+  t_init_last_      = millis() - INIT_RESEND_MS;  // fire immediately next loop
+}
+
+// EXPERIMENT: controller identity. See docs/protocol-reference.md (0x60D).
+void EsparCanComponent::set_controller_id(uint32_t id24) {
+  uint8_t a = (id24 >> 16) & 0xFF, b = (id24 >> 8) & 0xFF, c = id24 & 0xFF;
+  if (a == ctrl_id_[0] && b == ctrl_id_[1] && c == ctrl_id_[2]) return;
+  ctrl_id_[0] = a; ctrl_id_[1] = b; ctrl_id_[2] = c;
+  ESP_LOGW(TAG, "EXPERIMENT: controller ID (0x60D D3-D5) now %02X %02X %02X — re-running init", a, b, c);
+  if (driver_installed_ && !tx_standby_) restart_handshake_();
+}
+
+void EsparCanComponent::set_init_0x62_byte(uint8_t v) {
+  if (v == init_62_last_) return;
+  init_62_last_ = v;
+  ESP_LOGW(TAG, "EXPERIMENT: init frame 0x62 D8 now 0x%02X — re-running init", v);
+  if (driver_installed_ && !tx_standby_) restart_handshake_();
 }
 
 // Init burst — sent at startup and repeated every 150ms until heater responds.
@@ -575,7 +595,7 @@ void EsparCanComponent::send_init_burst_() {
   static const uint8_t d5C[] = {0x1E,0x00,0x1E,0x00,0x00,0x00,0x00,0x00};
   static const uint8_t d5D[] = {0x00,0x00,0x00,0x00,0x00,0x00,0xFE,0xFF};
   static const uint8_t d5E[] = {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00};
-  static const uint8_t d62[] = {0x12,0x00,0x00,0x00,0x00,0x00,0x00,0xF1};
+  const uint8_t d62[] = {0x12,0x00,0x00,0x00,0x00,0x00,0x00,init_62_last_};
   static const uint8_t d63[] = {0x32,0x01,0x01,0x00,0x00,0x00,0x00,0x00};
   static const uint8_t d64[] = {0x3C,0x00,0x05,0x00,0xC8,0x00,0xFF,0x03};
   static const uint8_t d66[] = {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00};
@@ -605,7 +625,7 @@ void EsparCanComponent::send_init_burst_() {
 
 // Controller alive heartbeat — sent every 100ms
 void EsparCanComponent::send_heartbeat_() {
-  static const uint8_t d[] = {0x0D,0x10,0x82,0xB6,0x09,0x20,0x70,0x00};
+  const uint8_t d[] = {0x0D,0x10,ctrl_id_[0],ctrl_id_[1],ctrl_id_[2],0x20,0x70,0x00};
   send_frame_(0x60D, d, 8);
 }
 
@@ -694,6 +714,8 @@ void EsparCanComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "  Heat setpoint to heater: %.0f°F", heat_setpoint_f_);
   ESP_LOGCONFIG(TAG, "  Cabin temp unit: %s", cabin_temp_fahrenheit_ ? "fahrenheit (converting °F→°C)" : "celsius (passthrough)");
   ESP_LOGCONFIG(TAG, "  Pause mode: %s", pause_mode_fan_ ? "fan (FAN_ONLY at setpoint)" : "off (IDLE at setpoint)");
+  ESP_LOGCONFIG(TAG, "  Controller ID (0x60D D3-D5): %02X %02X %02X | 0x62 D8: 0x%02X",
+                ctrl_id_[0], ctrl_id_[1], ctrl_id_[2], init_62_last_);
   ESP_LOGCONFIG(TAG, "  Thermostat hysteresis: %.1f°C", HYSTERESIS_C);
   LOG_TEXT_SENSOR("  ",    "Heater State",     heater_state_sensor_);
   LOG_BINARY_SENSOR("  ",  "Heating",          flame_sensor_);

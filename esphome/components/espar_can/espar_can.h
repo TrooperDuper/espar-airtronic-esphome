@@ -99,6 +99,15 @@ class EsparCanComponent : public climate::Climate, public Component {
   void set_cabin_temp_fahrenheit(bool f)                    { cabin_temp_fahrenheit_ = f; }
   void set_pause_mode_fan(bool f)                           { pause_mode_fan_ = f; }
   void set_tx_standby(bool s);
+  // EXPERIMENT (controller identity): 24-bit ID sent in 0x60D D3–D5, and the
+  // last byte of init frame 0x62. Changing either at runtime re-runs the init
+  // handshake (same path as leaving CAN standby).
+  void set_controller_id(uint32_t id24);
+  void set_init_0x62_byte(uint8_t b);
+  uint8_t  get_init_0x62_byte() const { return init_62_last_; }
+  uint32_t get_controller_id() const {
+    return (uint32_t(ctrl_id_[0]) << 16) | (uint32_t(ctrl_id_[1]) << 8) | ctrl_id_[2];
+  }
   void set_current_temperature_sensor(sensor::Sensor *s);
   void set_heater_state_sensor(text_sensor::TextSensor *s)  { heater_state_sensor_ = s; }
   void set_flame_sensor(binary_sensor::BinarySensor *s)     { flame_sensor_ = s; }
@@ -160,6 +169,10 @@ class EsparCanComponent : public climate::Climate, public Component {
   // Use when a real EasyStart Pro is on the bus: the WeAct emulates the Pro's
   // identity, so both active is an ADR collision (P000342, invalid config).
   bool  tx_standby_{false};
+  // Controller identity (EXPERIMENT). Defaults = the maintainer's EasyStart Pro.
+  uint8_t ctrl_id_[3]{0x82, 0xB6, 0x09};  // 0x60D D3–D5
+  uint8_t init_62_last_{0xF1};            // 0x62 D8
+  void restart_handshake_();
 
   // ── CAN state ────────────────────────────────────────────────────────
   uint16_t heater_ctr_{0xFFFE};        // 0x2C4 D5/D6 value echoed in our 0x54 (likely a temperature; was called "counter")
