@@ -26,7 +26,7 @@ from pathlib import Path
 
 FRAME_INFO = {
     # Heater → Controller
-    0x2C4: ("HEATER→CTL", "Primary status: D1=state, D2b5=flame, D5/D6=counter"),
+    0x2C4: ("HEATER→CTL", "Primary status: D1=state, D2b5=flag0x20 (unconfirmed), D5/D6=temperature echo (previously counter)"),
     0x2C5: ("HEATER→CTL", "Reserved — always zero"),
     0x2C6: ("HEATER→CTL", "Static hardware config ID"),
     0x625: ("HEATER→CTL", "Heater alive heartbeat — D2 toggles 0x00/0x10"),
@@ -89,9 +89,9 @@ def annotate_row(can_id: int, data: list[str]) -> str:
             d5 = int(data[4], 16) if data[4].strip() else 0
             d6 = int(data[5], 16) if data[5].strip() else 0
             state = HEATER_STATES.get(d1, f"0x{d1:02X}?")
-            flame = "FLAME" if (d2 & 0x20) else "no-flame"
+            flag = "flag0x20" if (d2 & 0x20) else "no-flag0x20"
             ctr = d5 | (d6 << 8)
-            base += f" | state={state} {flame} ctr=0x{ctr:04X}"
+            base += f" | state={state} {flag} temp_echo={ctr}"
         except (ValueError, IndexError):
             pass
 

@@ -19,8 +19,11 @@ BU_: HEATER CONTROLLER
 //
 //  Signal encoding notes:
 //    HeaterState  — raw D1 byte; see BO_ 708 comment for state map
-//    FlameActive  — single bit at D2[5] (bit 5 of byte index 2)
-//    Counter_HB   — D5/D6 little-endian uint16; echoed by controller in 0x54 D5/D6
+//    FlameActive  — single bit at D2[5]. Name kept for compatibility: this is an
+//                   UNCONFIRMED flag (0x20), not a reliable flame indicator. Use
+//                   HeaterState == 0x09 (HEATING) for burning.
+//    Counter_HB   — D5/D6 LE uint16; temperature echo (previously counter), raw ~600-700;
+//                   echoed by controller in 0x54 D5/D6. Name kept for compatibility.
 //    CommandMode  — D2 value: 0x00=IDLE  0x02=FAN  0x05=HEAT
 //    SetpointRaw  — D3/D4 LE uint16; value = round((°F-32)*50/9)
 //                   Verified: 66°F→0xBD  75°F→0xEF  78°F→0x100  80°F→0x10B
@@ -40,12 +43,14 @@ BO_ 708 Heater_PrimaryStatus: 8 HEATER
  SG_ FlameActive   : 21|1@1+ (1,0) [0|1]   "" CONTROLLER
  SG_ Counter_HB    : 32|16@1+(1,0) [0|65535] "" CONTROLLER
  // HeaterState D1 values:
+ //   0x01 = (unmapped; single frame at end of cooldown on another B2L)
  //   0x02 = STARTUP  (also stuck-startup fault if > 90s)
  //   0x03 = IDLE
  //   0x09 = HEATING
  //   0x21 = FAN (blower-only / cooldown)
- // FlameActive: bit 5 of byte 2 (D3 in 1-indexed notation)
- // Counter_HB:  D5/D6 little-endian; echoed in 0x54 command frames
+ // FlameActive: D2 bit 5 — unconfirmed flag 0x20, NOT a reliable flame indicator
+ //              (absent on a sea-level B2L; leading theory: altitude compensation)
+ // Counter_HB:  D5/D6 LE temperature echo (previously counter); echoed in 0x54
 
 BO_ 709 Heater_SecondaryStatus: 8 HEATER
  // All bytes observed as 0x00 in captures; signals not yet decoded
@@ -65,7 +70,8 @@ BO_ 84 Ctrl_Command: 8 CONTROLLER
  // CommandEnable: 0x00=disabled  0x01=enabled
  // CommandMode:   0x00=IDLE  0x02=FAN  0x05=HEAT
  // SetpointRaw:   little-endian; see encoding note above
- // Counter_Echo:  D5/D6 — echoes Counter_HB from 0x2C4; D7/D8 always 0x00
+ // Counter_Echo:  D5/D6 — temperature echo (previously counter); echoes Counter_HB
+ //                from 0x2C4 (OEM controller sends its own room-temp value); D7/D8 always 0x00
 
 BO_ 85 Ctrl_ConfigA: 8 CONTROLLER
  SG_ ConfigA_Raw : 0|64@1+ (1,0) [0|0] "" HEATER

@@ -13,7 +13,7 @@
 
 | ID | Direction | Rate | Description |
 |---|---|---|---|
-| 0x2C4 | Heater → Controller | ~100ms | Primary status: state, flame, counter |
+| 0x2C4 | Heater → Controller | ~100ms | Primary status: state, flag 0x20, temperature echo |
 | 0x2C5 | Heater → Controller | ~100ms | Reserved (always zero) |
 | 0x2C6 | Heater → Controller | ~100ms | Static hardware config ID |
 | 0x625 | Heater → Controller | ~100ms | Heater alive heartbeat |
@@ -38,15 +38,16 @@
 | Byte | Signal | Decode |
 |---|---|---|
 | D1 | Heater state | See state table below |
-| D2 bit 5 | Flame active | `(D2 & 0x20) != 0` — non-zero when combustion confirmed |
+| D2 bit 5 | Flag 0x20 (meaning unconfirmed) | Set ~45 s into each burn on one B2L (~2,100 m); never set on another B2L near sea level, even under the OEM controller. Leading theory: altitude compensation active. **Not a reliable flame signal** — the component uses D1=`0x09` (HEATING) for "flame". |
 | D2 | Fault flag | `0x08` when D1=0x0B (fault active) |
 | D3 | Fault code | Non-zero during fault and for ~26s post-fault in IDLE. See fault code table below. |
-| D5–D6 | Counter | 16-bit LE counter; echoes controller counter during heating. Heater runs its own independent counter during fault. |
+| D5–D6 | Temperature echo (previously "counter") | 16-bit LE, raw ≈ 600–700. Likely a temperature: the OEM controller sends its own value (matches its 0x65 frame, probably its room sensor); the heater mirrors the controller's value while heating and reports its own value when idle or in fault. Semantics unconfirmed. |
 
 **Heater state codes (D1):**
 
 | Value | State | Notes |
 |---|---|---|
+| `0x01` | (unmapped) | Seen for a single frame at the end of cooldown on another B2L. Meaning unknown; the component reports it as UNKNOWN. |
 | `0x02` | STARTUP | Initializing / pre-heat |
 | `0x03` | IDLE | Off — standby |
 | `0x08` | INIT | Seen briefly at first contact |
@@ -69,12 +70,12 @@
 |---|---|
 | `0x00` | No flame yet |
 | `0x08` | Intermediate / transition |
-| `0x20` | Flame confirmed |
+| `0x20` | Flag 0x20 set — meaning unconfirmed (see D2 bit 5 above); not seen on every heater |
 
 **Quick decode:**
 ```python
 state = msg[0]         # 0x09=heating, 0x21=fan, 0x03=idle, 0x02=startup, 0x0B=fault
-flame = msg[1] & 0x20  # non-zero = flame active
+burning = msg[0] == 0x09  # HEATING; msg[1] & 0x20 is an unconfirmed flag, not a flame signal
 fault_code = msg[2]    # non-zero during fault (and ~26s post-fault): 0x20=flame, 0x40=overtemp
 ```
 
@@ -155,7 +156,7 @@ payload = [0x01, 0x05, D3, D4, ctr_lo, ctr_hi, 0x00, 0x00]
 
 > **Encoding confidence: VERY HIGH.** The 78°F case (D4=`0x01`) definitively proves the temperature is a 16-bit little-endian uint16 in 0.1°C units — not a single byte.
 
-**Counter (D5/D6):** Slowly decrementing 16-bit LE value. During heating the heater echoes the controller's counter in 0x2C4 D5/D6. Safe to start at any value (~`0x02F0`) and let it drift. Use `FE FF` (SAE J1939 "Not Available") for idle/fan modes.
+**Temperature echo (D5/D6, previously documented as a "counter"):** 16-bit LE, raw ≈ 600–700, drifts slowly. A capture with the OEM EasyStart Pro shows the controller sends its own value here (the same value as its 0x65 frame — most likely its room-temperature sensor). While heating, the heater mirrors it in 0x2C4 D5/D6. This component echoes the heater's own value back, which works with the fixed-setpoint approach. Use `FE FF` (SAE J1939 "Not Available") for idle/fan modes as before.
 
 **Duration note:** Duration (30min, 60min, etc.) is **not encoded in any CAN message**. The heater runs until commanded OFF. Implement auto-off timers in your controller or HA automations.
 
@@ -182,6 +183,8 @@ Send every ~100ms. Simplest valid payload (static):
 ```
 
 The OEM controller toggles D2 and D3 bits across 4 states — static works fine.
+
+**Controller identity (hypothesis):** D3–D5 differ between controllers. Ours sends `82/83 B6 09`; another EasyStart Pro sends `D6/D7 74 04`. D3 bit 0 toggles in both. These bytes look like a controller ID/serial. A different heater accepted the component's copied ID (`82 B6 09`), so the heater doesn't appear to bind to a specific controller. Relevant to multi-controller / ADR work.
 
 ---
 

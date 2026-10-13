@@ -63,6 +63,8 @@ The sequence immediately following the fault frame:
 0x2C4: 03 08 40 00 85 02 00 00   (heater: D1=IDLE, D2=0x08 still, D3=0x40 still)
 ```
 
+> Note: later captures suggest this D5/D6 "counter" is actually a temperature echo — see docs/protocol-reference.md.
+
 **Key observations:**
 1. The controller responded within the same ~200 ms frame window, switching from heat to idle command. This was extremely rapid — the OEM controller either detected the fault from the 0x0B status or had its own independent thermal sensing.
 2. The heater recovered to `D1=0x03` (IDLE) immediately — only **one frame** at `D1=0x0B` was captured. The fault was acknowledged and the heater began shutdown instantly.

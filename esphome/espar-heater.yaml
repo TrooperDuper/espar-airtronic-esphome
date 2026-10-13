@@ -170,10 +170,17 @@ espar_can:
                   blue: 0%
                   brightness: 15%
 
+  # True while the heater reports HEATING (0x2C4 D1=0x09).
   flame_active:
     name: "Espar Flame Active"
     id: espar_flame_active
     device_class: heat
+
+  # Raw 0x2C4 D2 bit5. Previously used as "flame"; it doesn't appear on every
+  # heater. Kept as a diagnostic so more data builds up across units/altitudes.
+  flag_0x20:
+    name: "Espar Status Flag 0x20"
+    id: espar_flag_0x20
 
   heater_connected:
     name: "Espar Connected"

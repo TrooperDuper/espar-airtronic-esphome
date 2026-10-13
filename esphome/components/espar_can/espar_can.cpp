@@ -385,7 +385,13 @@ void EsparCanComponent::parse_0x2C4_(const twai_message_t &msg) {
   uint8_t  new_state      = msg.data[0];
   uint8_t  new_sub        = msg.data[1];
   uint8_t  new_fault_code = msg.data[2];  // D3: fault bits (0x00 = normal)
-  bool     new_flame      = (new_sub & 0x20) != 0;
+  // "Flame" follows the heating state (D1=0x09). D2 bit5 (0x20) was used
+  // previously, but a second B2L (near sea level) never sets it, even under the
+  // OEM EasyStart Pro, while ours (~2,100 m) sets it ~45 s into each burn.
+  // Meaning of 0x20 is unconfirmed (altitude compensation is the leading
+  // theory), so it's exposed separately as a diagnostic flag.
+  bool     new_flame      = (new_state == HEATER_STATE_HEATING);
+  bool     new_flag_0x20  = (new_sub & 0x20) != 0;
   uint16_t new_ctr        = static_cast<uint16_t>(msg.data[4]) |
                             (static_cast<uint16_t>(msg.data[5]) << 8);
 
@@ -393,7 +399,8 @@ void EsparCanComponent::parse_0x2C4_(const twai_message_t &msg) {
   heater_ctr_ = new_ctr;
 
   bool state_changed = (new_state != heater_d1_state_) || (new_flame != flame_active_)
-                     || (new_fault_code != heater_fault_code_);
+                     || (new_fault_code != heater_fault_code_)
+                     || (new_flag_0x20 != flag_0x20_);
 
   // ── Active fault detection ─────────────────────────────────────────────
   if (new_state == HEATER_STATE_FAULT && heater_d1_state_ != HEATER_STATE_FAULT) {
@@ -463,11 +470,12 @@ void EsparCanComponent::parse_0x2C4_(const twai_message_t &msg) {
   if (new_state == HEATER_STATE_HEATING && waiting_heat_confirm_) {
     waiting_heat_confirm_ = false;
     failed_start_count_   = 0;  // successful start resets the counter
-    ESP_LOGI(TAG, "Heating confirmed — flame: %s", new_flame ? "active" : "off");
+    ESP_LOGI(TAG, "Heating confirmed (D1=0x09) — flag 0x20: %s", new_flag_0x20 ? "set" : "clear");
   }
 
   heater_d1_state_ = new_state;
   flame_active_    = new_flame;
+  flag_0x20_       = new_flag_0x20;
 
   // ── Publish to sensors on state change ────────────────────────────
   if (state_changed) {
@@ -479,11 +487,12 @@ void EsparCanComponent::parse_0x2C4_(const twai_message_t &msg) {
       (new_state == HEATER_STATE_FAULT)   ? "FAULT"   :
       (new_state == HEATER_STATE_INIT)    ? "INIT"    : "UNKNOWN";
 
-    ESP_LOGI(TAG, "Heater state: %s | Flame: %s | Ctr: 0x%04X",
-      state_str, new_flame ? "ON" : "off", new_ctr);
+    ESP_LOGI(TAG, "Heater state: %s | Burning: %s | Flag0x20: %s | Echo: %u",
+      state_str, new_flame ? "ON" : "off", new_flag_0x20 ? "set" : "clear", new_ctr);
 
     if (heater_state_sensor_) heater_state_sensor_->publish_state(state_str);
     if (flame_sensor_)         flame_sensor_->publish_state(new_flame);
+    if (flag_0x20_sensor_)     flag_0x20_sensor_->publish_state(new_flag_0x20);
   }
 }
 
@@ -688,6 +697,7 @@ void EsparCanComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "  Thermostat hysteresis: %.1f°C", HYSTERESIS_C);
   LOG_TEXT_SENSOR("  ",    "Heater State",     heater_state_sensor_);
   LOG_BINARY_SENSOR("  ",  "Flame Active",     flame_sensor_);
+  LOG_BINARY_SENSOR("  ",  "Status Flag 0x20", flag_0x20_sensor_);
   LOG_BINARY_SENSOR("  ",  "Heater Connected", connected_sensor_);
   LOG_TEXT_SENSOR("  ",    "Fault",            fault_sensor_);
 }

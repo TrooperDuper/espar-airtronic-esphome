@@ -6,6 +6,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased]
+
+### Changed
+- `flame_active` now follows the heater's HEATING state (0x2C4 D1=0x09) instead of D2 bit5. The raw D2 bit5 is exposed as a new optional diagnostic binary sensor `flag_0x20` (meaning unconfirmed; absent on a sea-level B2L — leading theory is altitude compensation). YAML key and entity name for `flame_active` are unchanged.
+- P000342 corrected to "invalid configuration — check ADR coding": multiple controllers are supported; the conflict is the WeAct cloning the EasyStart Pro's identity.
+- Status LED migrated from deprecated `neopixelbus` to `esp32_rmt_led_strip`.
+
+### Documentation
+- 0x2C4 / 0x54 D5–D6 relabeled as a likely temperature echo (previously "counter"); no behavior change.
+- 0x60D D3–D5 documented as a likely controller ID/serial.
+- Unmapped heater state `0x01` noted (single frame at end of cooldown on another B2L).
+
+---
+
 ## [1.1.0] — 2026-06-11
 
 ### Added
