@@ -13,8 +13,8 @@
 ```
 [D1][D2][D3][D4][D5][D6][00][00]
  ^    ^    ^         ^    ^
- |    |    |         |    Counter Hi (LE uint16 with D5)
- |    |    |         Counter Lo
+ |    |    |         |    Temp echo Hi (previously 'counter'; LE uint16 with D5)
+ |    |    |         Temp echo Lo (previously 'counter')
  |    |    Fault code (0x00=none; non-zero only in fault/post-fault)
  |    Sub-state / flags (see below)
  Heater state
@@ -25,11 +25,12 @@
 | **Heater State** | D1 | `0x02`=Startup, `0x03`=Idle, `0x08`=Init, `0x09`=Heating, `0x0B`=**FAULT**, `0x21`=Fan Running |
 | **Sub-state / Flags** | D2 | Context-dependent (see tables below) |
 | **Fault Code** | D3 | `0x00`=none; `0x20`=flame loss; `0x40`=overtemperature — **non-zero only in fault / post-fault recovery** |
-| **Counter Lo** | D5 | 16-bit LE counter (heater internal; echoes controller's during normal heating) |
-| **Counter Hi** | D6 | see D5 |
+| **Temp echo Lo (previously 'counter')** | D5 | 16-bit LE, raw ≈ 600–700 — likely a temperature: heater mirrors the controller's value (its room sensor, same as its 0x65) while heating, reports its own when idle/fault. Unconfirmed. |
+| **Temp echo Hi (previously 'counter')** | D6 | see D5 |
 
 **Heater state codes:**
 ```
+0x01  (unmapped) seen for a single frame at end of cooldown on another B2L; meaning unknown — component reports UNKNOWN
 0x02  Startup / initializing
 0x03  Idle (off)       ← D3 may be non-zero for ~26 s after fault clears
 0x08  Brief init transition (only 1-2 frames)
@@ -43,7 +44,9 @@
 During HEATING (D1=0x09):
   D2=0x00   Heating commanded; no flame yet (startup ramp, or thermostat cycling)
   D2=0x08   Intermediate / transition state (~3-4 min observed, mid-cycle)
-  D2=0x20   Flame confirmed — actively burning
+  D2=0x20   Flag 0x20 — meaning unconfirmed (leading theory: altitude compensation). Set ~45 s
+            into each burn on one B2L (~2,100 m); never set on another B2L near sea level.
+            NOT a reliable flame signal — use D1=0x09 (HEATING) instead.
 
 During FAULT (D1=0x0B):
   D2=0x08   Always 0x08 during active fault (both capture types)
@@ -72,7 +75,7 @@ During IDLE after fault (D1=0x03):
 state     = msg[0]            # 0x09=heating, 0x0B=fault, 0x21=fan-only, 0x03=idle
 sub_state = msg[1]
 fault_code= msg[2]            # 0x00=ok; 0x20=flame loss; 0x40=overtemp
-flame     = (msg[1] & 0x20) != 0  # True only when D1=0x09 and D2=0x20
+burning   = (msg[0] == 0x09)      # HEATING; (msg[1] & 0x20) is an unconfirmed flag, not flame
 
 # Fault detection (covers active fault AND brief post-fault IDLE):
 in_fault  = (state == 0x0B) or (fault_code != 0x00)
@@ -146,7 +149,7 @@ payload = [0x01, 0x05, D3, D4, ctr_lo, ctr_hi, 0x00, 0x00]
 
 **Duration note:** Duration (30min, 42min, etc.) is NOT encoded in any CAN message. The heater runs until commanded OFF. Implement auto-off in software (the ESP32 sketch uses a configurable timer).
 
-**Counter (D5/D6):** Slowly decrementing 16-bit LE value in fan/idle modes; during confirmed heating mode the heater echoes the controller's counter in 0x2C4 D5/D6. Safe to start at any value (~0x02F0) and let it drift.
+**Temp echo (D5/D6, previously 'counter'):** 16-bit LE, raw ≈ 600–700, drifts slowly. The OEM EasyStart Pro sends its own value (same as its 0x65 frame — most likely its room-temperature sensor); the heater mirrors it in 0x2C4 D5/D6 while heating and reports its own lower value when idle. The slow drift is why it looked like a decrementing counter. Semantics unconfirmed.
 
 ---
 
@@ -178,6 +181,8 @@ Toggle D2 bit 0 and D3 bit 0 alternately:
 0D 11 83 B6 09 20 70 00  (state D)
 ```
 Simplest: just send `0D 10 83 B6 09 20 70 00` static at 100ms.
+
+**Controller identity (hypothesis):** D3–D5 look like a controller ID/serial — ours `82/83 B6 09`, another EasyStart Pro `D6/D7 74 04` (D3 bit 0 toggles in both). A different heater accepted our copied ID, so the heater doesn't appear to bind to one controller. Relevant to multi-controller / ADR work.
 
 ### ID: 0x65 — Periodic Status (every ~10s, send 4x burst)
 Cycle D3 through 01, 02, 03, 01... Counter (D1+D2) increments each set:

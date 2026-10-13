@@ -142,8 +142,10 @@ espar_can:
 
   heater_state:                         # optional text sensor: STARTUP/IDLE/HEATING/FAN/UNKNOWN
     name: "Espar Heater State"
-  flame_active:                         # optional binary sensor: true when combustion confirmed
+  flame_active:                         # optional binary sensor: true while heater reports HEATING (0x2C4 D1=0x09)
     name: "Espar Flame Active"
+  flag_0x20:                            # optional diagnostic: raw 0x2C4 D2 bit5, meaning unconfirmed
+    name: "Espar Status Flag 0x20"
   heater_connected:                     # optional binary sensor: true when 0x625 heartbeat present
     name: "Espar Connected"
   fault_text:                           # optional text sensor: "OK" or fault description
@@ -176,7 +178,8 @@ The `Espar CAN Standby` switch (defined in `espar-heater.yaml`) suspends all out
 |---|---|---|
 | `climate.espar_heater` | Climate | Main control entity |
 | `sensor.espar_heater_state` | Text sensor | STARTUP / IDLE / HEATING / FAN / UNKNOWN |
-| `binary_sensor.espar_flame_active` | Binary sensor | True when combustion confirmed |
+| `binary_sensor.espar_flame_active` | Binary sensor | True while the heater reports HEATING (0x2C4 D1=0x09) |
+| `binary_sensor.espar_status_flag_0x20` | Binary sensor | Raw 0x2C4 D2 bit5 — diagnostic, meaning unconfirmed |
 | `binary_sensor.espar_connected` | Binary sensor | True when 0x625 heartbeat present |
 | `sensor.espar_fault` | Text sensor | "OK" or fault description string |
 | `switch.espar_can_standby` | Switch | Suspend all TX frames for OEM diagnostics (see below) |

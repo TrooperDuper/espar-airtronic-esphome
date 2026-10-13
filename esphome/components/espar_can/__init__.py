@@ -5,7 +5,8 @@ Trooper camper project.  WeAct CAN485 V1.0 (ESP32-D0WD-V3).
 Exposes:
   - climate entity  (HEAT / FAN_ONLY / OFF) with external current-temp sensor
   - text_sensor     heater_state  ("STARTUP" / "IDLE" / "HEATING" / "FAN" / "UNKNOWN")
-  - binary_sensor   flame_active  (D2 bit5 of 0x2C4)
+  - binary_sensor   flame_active  (true while heater state D1=0x09 HEATING)
+  - binary_sensor   flag_0x20     (raw 0x2C4 D2 bit5 — diagnostic, meaning unconfirmed)
   - binary_sensor   heater_connected  (0x625 heartbeat present)
   - text_sensor     fault_text    (human-readable fault / "OK")
 
@@ -20,7 +21,7 @@ New config options (see CONFIG_SCHEMA below):
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import climate, sensor, binary_sensor, text_sensor
-from esphome.const import CONF_ID
+from esphome.const import CONF_ID, ENTITY_CATEGORY_DIAGNOSTIC
 
 # ── Component registration ────────────────────────────────────────────────
 DEPENDENCIES = []
@@ -38,6 +39,7 @@ CONF_CABIN_TEMP_UNIT            = "cabin_temp_unit"
 CONF_PAUSE_MODE                 = "pause_mode"
 CONF_HEATER_STATE               = "heater_state"
 CONF_FLAME_ACTIVE               = "flame_active"
+CONF_FLAG_0X20                  = "flag_0x20"
 CONF_HEATER_CONNECTED           = "heater_connected"
 CONF_FAULT_TEXT                 = "fault_text"
 
@@ -84,6 +86,9 @@ CONFIG_SCHEMA = (
             # Optional entity outputs
             cv.Optional(CONF_HEATER_STATE):     text_sensor.text_sensor_schema(),
             cv.Optional(CONF_FLAME_ACTIVE):     binary_sensor.binary_sensor_schema(),
+            cv.Optional(CONF_FLAG_0X20): binary_sensor.binary_sensor_schema(
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC
+            ),
             cv.Optional(CONF_HEATER_CONNECTED): binary_sensor.binary_sensor_schema(),
             cv.Optional(CONF_FAULT_TEXT):       text_sensor.text_sensor_schema(),
         }
@@ -113,6 +118,10 @@ async def to_code(config):
     if CONF_FLAME_ACTIVE in config:
         sens = await binary_sensor.new_binary_sensor(config[CONF_FLAME_ACTIVE])
         cg.add(var.set_flame_sensor(sens))
+
+    if CONF_FLAG_0X20 in config:
+        sens = await binary_sensor.new_binary_sensor(config[CONF_FLAG_0X20])
+        cg.add(var.set_flag_0x20_sensor(sens))
 
     if CONF_HEATER_CONNECTED in config:
         sens = await binary_sensor.new_binary_sensor(config[CONF_HEATER_CONNECTED])

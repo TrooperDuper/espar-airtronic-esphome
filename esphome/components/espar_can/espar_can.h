@@ -8,7 +8,8 @@
 //  Protocol summary (from RE captures):
 //    HEATER → CONTROLLER
 //      0x625  ~100ms   Heater heartbeat
-//      0x2C4  ~220ms   Primary status:  D1=state, D2b5=flame, D5/D6=counter LE
+//      0x2C4  ~220ms   Primary status:  D1=state (0x09=heating/burning),
+//                      D2b5=flag 0x20 (meaning unconfirmed), D5/D6=temperature echo LE
 //      0x2C5  ~220ms   Secondary status (all-zero observed)
 //      0x2C6  ~220ms   Data  (32 00 7C 01 ... static observed)
 //
@@ -101,6 +102,7 @@ class EsparCanComponent : public climate::Climate, public Component {
   void set_current_temperature_sensor(sensor::Sensor *s);
   void set_heater_state_sensor(text_sensor::TextSensor *s)  { heater_state_sensor_ = s; }
   void set_flame_sensor(binary_sensor::BinarySensor *s)     { flame_sensor_ = s; }
+  void set_flag_0x20_sensor(binary_sensor::BinarySensor *s) { flag_0x20_sensor_ = s; }
   void set_connected_sensor(binary_sensor::BinarySensor *s) { connected_sensor_ = s; }
   void set_fault_sensor(text_sensor::TextSensor *s)         { fault_sensor_ = s; }
 
@@ -135,6 +137,7 @@ class EsparCanComponent : public climate::Climate, public Component {
   // ── Sensors ───────────────────────────────────────────────────────────
   text_sensor::TextSensor    *heater_state_sensor_{nullptr};
   binary_sensor::BinarySensor *flame_sensor_{nullptr};
+  binary_sensor::BinarySensor *flag_0x20_sensor_{nullptr};  // raw 0x2C4 D2 bit5, meaning unconfirmed
   binary_sensor::BinarySensor *connected_sensor_{nullptr};
   text_sensor::TextSensor    *fault_sensor_{nullptr};
   sensor::Sensor             *current_temp_sensor_{nullptr};
@@ -156,10 +159,11 @@ class EsparCanComponent : public climate::Climate, public Component {
   bool  tx_standby_{false};
 
   // ── CAN state ────────────────────────────────────────────────────────
-  uint16_t heater_ctr_{0xFFFE};        // counter echoed from 0x2C4 D5/D6
+  uint16_t heater_ctr_{0xFFFE};        // 0x2C4 D5/D6 value echoed in our 0x54 (likely a temperature; was called "counter")
   uint8_t  heater_d1_state_{0};
   uint8_t  heater_fault_code_{0};      // 0x2C4 D3: 0x00=ok, 0x20=flame loss, 0x40=overtemp
   bool     flame_active_{false};
+  bool     flag_0x20_{false};
   bool     heater_connected_{false};
   uint32_t heater_last_seen_{0};
   bool     driver_installed_{false};
