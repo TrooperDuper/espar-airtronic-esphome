@@ -211,6 +211,7 @@ Your exact IDs may differ if you renamed entities or your device name is prefixe
 2. In HA, go to **Settings → Devices & services → Entities**, search for `espar_flame_active`, open it, and choose **Delete** (it shows as unavailable/not provided). Or select it and use **Remove selected**.
 3. Update anything that referenced the old entity: automations, scripts, dashboards, template sensors. HA's **Repairs** panel and the entity's *Related* tab show what still points at it.
 4. Optional: to keep your automations untouched instead of editing them, delete the old entity first (step 2), then open the new **Espar Heating** entity's settings and change its entity ID to `binary_sensor.espar_flame_active`. Its long-term statistics history starts fresh either way.
+5. Optional: the example config also changes this sensor's `device_class` from `heat` to `running`, so HA shows **Running / Not running** instead of **Hot / Normal**. This only changes the state label, not the entity ID.
 
 The diagnostic `flag_0x20` sensor ("Espar Status Flag 0x20") is new and only appears if you add it to your YAML.
 
