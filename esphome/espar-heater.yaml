@@ -268,8 +268,8 @@ button:
 # ── CAN standby switch ────────────────────────────────────────────────────────
 # Suspends all outbound CAN frames without physically unplugging the WeAct.
 # Use before connecting a real EasyStart Pro / OEM diagnostic tool: the WeAct
-# emulates the EasyStart Pro, so two of them on the bus is an ADR/identity
-# collision (fault P000342, "invalid configuration — check ADR coding").
+# emulates the EasyStart Pro (same CAN IDs); both transmitting has been seen to
+# trigger fault P000342 ("invalid configuration — check ADR coding").
 # Resuming automatically re-runs the CAN handshake.
 switch:
   - platform: template

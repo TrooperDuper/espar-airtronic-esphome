@@ -29,7 +29,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### ⚠️ Breaking — entity rename
 - The example config renames the `flame_active` entity from **"Espar Flame Active"** to **"Espar Heating"** (it's on during the ignition ramp too, so "flame" overstated it). In Home Assistant this creates a new entity (`binary_sensor.espar_heating`) and leaves the old `binary_sensor.espar_flame_active` behind as an unavailable, orphaned entity. Delete it and update any automations/dashboards that used it. See **Upgrading** in `esphome/README.md` for step-by-step cleanup, including how to keep the old entity ID.
-- P000342 corrected to "invalid configuration — check ADR coding": multiple controllers are supported; the conflict is the WeAct cloning the EasyStart Pro's identity.
+- P000342 corrected to "invalid configuration — check ADR coding" (not "too many CAN controllers"). ADR is the European dangerous-goods agreement (Eberspächer's ADR mode for hazardous-cargo vehicles), not a bus address; the earlier "ADR address" reading was wrong. Thanks to Greg for spotting it. The WeAct + Pro conflict is likely both sending the same CAN IDs.
 - Status LED migrated from deprecated `neopixelbus` to `esp32_rmt_led_strip`.
 
 ### Documentation

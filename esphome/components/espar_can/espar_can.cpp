@@ -643,8 +643,8 @@ void EsparCanComponent::send_frame_(uint32_t id, const uint8_t *data, uint8_t le
 
 // Called from YAML switch lambda (Espar CAN Standby).
 // Suspending TX lets a real EasyStart Pro / EasyScan share the bus: the WeAct
-// emulates the Pro's identity, so both active at once is an ADR/identity
-// collision (fault P000342, "invalid configuration — check ADR coding").
+// emulates the Pro (same CAN IDs); both transmitting has been seen to trigger
+// fault P000342 ("invalid configuration — check ADR coding").
 // Resuming triggers a fresh init burst to re-establish the handshake.
 void EsparCanComponent::set_tx_standby(bool s) {
   if (s == tx_standby_) return;
