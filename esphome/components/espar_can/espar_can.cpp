@@ -7,6 +7,7 @@
 #include "espar_can.h"
 #include "esphome/core/log.h"
 #include "esphome/core/hal.h"
+#include <cstring>
 #include <cmath>
 #include <string>
 
@@ -99,6 +100,20 @@ void EsparCanComponent::loop() {
   // ── IDLE lock release (D3≠0 in IDLE after power interruption) ───────
   handle_idle_lock_(now);
 
+  // ── Periodic thermostat re-evaluation (anti-short-cycle timers expire
+  //    even when the cabin temperature doesn't change) ───────────────────
+  if ((now - t_thermo_eval_) >= THERMO_EVAL_MS) {
+    t_thermo_eval_ = now;
+    if (this->mode == climate::CLIMATE_MODE_HEAT) evaluate_thermostat_();
+  }
+
+  // ── Other controller gone? ───────────────────────────────────────────
+  if (foreign_ctrl_present_ && (now - foreign_ctrl_last_ms_) > FOREIGN_CTRL_TIMEOUT_MS) {
+    foreign_ctrl_present_ = false;
+    ESP_LOGI(TAG, "Other controller no longer seen on bus");
+    if (foreign_fault_published_) { foreign_fault_published_ = false; publish_fault_("OK"); }
+  }
+
   // ── Heartbeat timeout: heater went offline ────────────────────────────
   if (heater_connected_ && (now - heater_last_seen_) > HEARTBEAT_TIMEOUT_MS) {
     heater_connected_ = false;
@@ -154,7 +169,7 @@ climate::ClimateTraits EsparCanComponent::traits() {
       climate::CLIMATE_MODE_HEAT,
       climate::CLIMATE_MODE_FAN_ONLY,
   });
-  traits.set_visual_min_temperature(15.0f);   // 59°F
+  traits.set_visual_min_temperature(10.0f);   // 50°F — heater's own setpoint floor (Airtronic 3 TD §4.4)
   traits.set_visual_max_temperature(30.0f);   // 86°F
   traits.set_visual_temperature_step(0.5f);
   return traits;
@@ -172,6 +187,7 @@ void EsparCanComponent::control(const climate::ClimateCall &call) {
   if (call.get_mode().has_value()) {
     this->mode = *call.get_mode();
     changed = true;
+    user_mode_change_ = true;   // explicit user action bypasses min-off / start cap
     ESP_LOGI(TAG, "Climate mode → %s",
       this->mode == climate::CLIMATE_MODE_HEAT     ? "HEAT" :
       this->mode == climate::CLIMATE_MODE_FAN_ONLY ? "FAN_ONLY" : "OFF");
@@ -180,6 +196,7 @@ void EsparCanComponent::control(const climate::ClimateCall &call) {
   if (call.get_target_temperature().has_value()) {
     this->target_temperature = *call.get_target_temperature();
     changed = true;
+    user_mode_change_ = true;   // a setpoint change is also an explicit user action
     ESP_LOGD(TAG, "Target temperature → %.1f°C (%.1f°F)",
       this->target_temperature,
       this->target_temperature * 9.0f / 5.0f + 32.0f);
@@ -212,6 +229,7 @@ void EsparCanComponent::set_current_temperature_sensor(sensor::Sensor *s) {
 // Called on every temperature update and on every mode/setpoint change.
 void EsparCanComponent::evaluate_thermostat_() {
   if (locked_out_) return;
+  struct ClearUserFlag { bool &f; ~ClearUserFlag() { f = false; } } clear_user{user_mode_change_};
 
   switch (this->mode) {
     case climate::CLIMATE_MODE_OFF:
@@ -231,13 +249,32 @@ void EsparCanComponent::evaluate_thermostat_() {
       }
       float cur = this->current_temperature;
       float tgt = this->target_temperature;
-      if (cur < (tgt - HYSTERESIS_C)) {
-        // Below setpoint minus hysteresis → start heating
+      uint32_t now = millis();
+      bool user = user_mode_change_;
+      if (cur < (tgt - hysteresis_c_)) {
+        // Below setpoint minus hysteresis → start heating (subject to anti-short-cycle)
+        if (!cmd_heating_ && !user) {
+          if (min_off_ms_ && heat_off_valid_ && (now - heat_off_ms_) < min_off_ms_) {
+            log_ascs_hold_(1, min_off_ms_ - (now - heat_off_ms_));
+            break;
+          }
+          if (max_starts_per_hour_ && starts_last_hour_(now) >= max_starts_per_hour_) {
+            log_ascs_hold_(2, 0);
+            break;
+          }
+        }
+        if (!cmd_heating_) record_start_(now);
+        ascs_hold_reason_ = 0;
         apply_mode_(true, false);
       } else if (cur >= tgt) {
         // At or above setpoint → pause or idle depending on pause_mode config.
         // pause_mode_fan_=true: stay in FAN_ONLY (blower keeps running, no combustion).
         // pause_mode_fan_=false (default): send IDLE (full ~4-min cooldown cycle).
+        if (cmd_heating_ && min_run_ms_ && (now - heat_on_ms_) < min_run_ms_) {
+          log_ascs_hold_(3, min_run_ms_ - (now - heat_on_ms_));
+          break;
+        }
+        ascs_hold_reason_ = 0;
         apply_mode_(false, pause_mode_fan_);
       }
       // Within hysteresis band → maintain current command state (no change)
@@ -257,6 +294,9 @@ void EsparCanComponent::apply_mode_(bool heat, bool fan) {
   if (fan)  heat = false;
 
   if (heat == cmd_heating_ && fan == cmd_fan_) return;  // no change
+
+  if (heat && !cmd_heating_) heat_on_ms_ = millis();
+  if (!heat && cmd_heating_) { heat_off_ms_ = millis(); heat_off_valid_ = true; }
 
   cmd_heating_ = heat;
   cmd_fan_     = fan;
@@ -279,7 +319,10 @@ void EsparCanComponent::apply_mode_(bool heat, bool fan) {
 void EsparCanComponent::update_climate_action_() {
   climate::ClimateAction new_action;
 
-  if (this->mode == climate::CLIMATE_MODE_OFF) {
+  if (cooldown_) {
+    // After-run: blower purging the heat exchanger, whatever the mode is
+    new_action = climate::CLIMATE_ACTION_FAN;
+  } else if (this->mode == climate::CLIMATE_MODE_OFF) {
     new_action = climate::CLIMATE_ACTION_OFF;
   } else if (this->mode == climate::CLIMATE_MODE_FAN_ONLY) {
     new_action = climate::CLIMATE_ACTION_FAN;
@@ -312,9 +355,22 @@ void EsparCanComponent::handle_rx_() {
     ESP_LOGW(TAG, "CAN error-passive — bus error count: %lu", (unsigned long)st.bus_error_count);
   }
   if (alerts & TWAI_ALERT_BUS_ERROR) {
-    twai_status_info_t st;
-    twai_get_status_info(&st);
-    ESP_LOGW(TAG, "CAN bus error — count: %lu", (unsigned long)st.bus_error_count);
+    // Rate-limited: with the heater unpowered nothing ACKs our frames and the
+    // controller retries endlessly (thousands of errors/s). Logging each one
+    // stalls the main loop, so emit one summary per BUS_ERR_LOG_MS instead.
+    static constexpr uint32_t BUS_ERR_LOG_MS = 5000;
+    uint32_t now = millis();
+    if (bus_err_log_ms_ == 0 || (now - bus_err_log_ms_) >= BUS_ERR_LOG_MS) {
+      twai_status_info_t st;
+      twai_get_status_info(&st);
+      uint32_t delta = st.bus_error_count - bus_err_logged_count_;
+      ESP_LOGW(TAG, "CAN bus errors: +%lu in last %lus (total %lu)%s",
+               (unsigned long) delta, (unsigned long)(BUS_ERR_LOG_MS / 1000),
+               (unsigned long) st.bus_error_count,
+               heater_connected_ ? "" : " — heater not responding (unpowered?)");
+      bus_err_logged_count_ = st.bus_error_count;
+      bus_err_log_ms_ = now;
+    }
   }
   if (alerts & TWAI_ALERT_BUS_OFF) {
     // TWAI entered bus-off after 256 un-ACKed TX errors.
@@ -359,15 +415,26 @@ void EsparCanComponent::handle_rx_() {
           // Known IDs with no actionable content observed — suppress verbose log
           break;
 
+        case 0x60D:
         case 0x54:
         case 0x55:
         case 0x56:
         case 0x57:
+          // Another controller's heartbeat or commands (we never receive our own
+          // frames). An EasyStart Pro stops 0x60D ~3–4 min after its last button
+          // press but keeps 0x54–0x57 going, so both count as presence.
+          note_foreign_controller_(msg);
+          [[fallthrough]];
+        case 0x65:
+        // Init burst sent by a controller at power-up / handshake
+        case 0x5C: case 0x5D: case 0x5E: case 0x5F: case 0x60: case 0x61:
+        case 0x62: case 0x63: case 0x64: case 0x66: case 0x67: case 0x68:
+        case 0x69: case 0x6A: case 0x6B: case 0x6C: case 0x6D: case 0x10A:
           // OEM controller command frames (e.g. a real EasyStart Pro sharing the
           // bus). The WeAct emulates these same IDs, so observing them is expected,
-          // not a fault. Log at debug for RE only — do NOT publish a fault or drive
-          // the status LED red.
-          ESP_LOGD(TAG,
+          // not a fault. Log at verbose for RE only (~20 frames/s with a Pro on the
+          // bus) — do NOT publish a fault or drive the status LED red.
+          ESP_LOGV(TAG,
             "OEM controller frame 0x%03lX [%u]: %02X %02X %02X %02X %02X %02X %02X %02X",
             (unsigned long)msg.identifier, msg.data_length_code,
             msg.data[0], msg.data[1], msg.data[2], msg.data[3],
@@ -407,7 +474,12 @@ void EsparCanComponent::parse_0x2C4_(const twai_message_t &msg) {
              heater_fault_code_, new_fault_code, new_state, new_sub);
   }
 
-  bool state_changed = (new_state != heater_d1_state_) || (new_flame != flame_active_)
+  // Cooldown / after-run: IDLE with D2 bit3 (0x08) set and no fault code.
+  // Seen for ~4 min after heating while the blower purges, then D2 -> 0x00.
+  bool new_cooldown = (new_state == HEATER_STATE_IDLE) && (new_sub & 0x08)
+                      && (new_fault_code == HEATER_FAULT_NONE);
+
+  bool state_changed = (new_cooldown != cooldown_) || (new_state != heater_d1_state_) || (new_flame != flame_active_)
                      || (new_fault_code != heater_fault_code_)
                      || (new_flag_0x20 != flag_0x20_);
 
@@ -511,12 +583,14 @@ void EsparCanComponent::parse_0x2C4_(const twai_message_t &msg) {
   heater_d1_state_ = new_state;
   flame_active_    = new_flame;
   flag_0x20_       = new_flag_0x20;
+  cooldown_        = new_cooldown;
 
   // ── Publish to sensors on state change ────────────────────────────
   if (state_changed) {
     const char *state_str =
       (new_state == HEATER_STATE_HEATING) ? "HEATING" :
       (new_state == HEATER_STATE_FAN)     ? "FAN"     :
+      new_cooldown                        ? "COOLDOWN" :
       (new_state == HEATER_STATE_IDLE)    ? "IDLE"    :
       (new_state == HEATER_STATE_STARTUP) ? "STARTUP" :
       (new_state == HEATER_STATE_FAULT)   ? "FAULT"   :
@@ -524,6 +598,10 @@ void EsparCanComponent::parse_0x2C4_(const twai_message_t &msg) {
 
     ESP_LOGI(TAG, "Heater state: %s | Burning: %s | Flag0x20: %s | Echo: %u",
       state_str, new_flame ? "ON" : "off", new_flag_0x20 ? "set" : "clear", new_ctr);
+    if (strcmp(state_str, "UNKNOWN") == 0) {
+      ESP_LOGW(TAG, "Unmapped 0x2C4 state — raw D1-D4: %02X %02X %02X %02X",
+               msg.data[0], msg.data[1], msg.data[2], msg.data[3]);
+    }
 
     if (heater_state_sensor_) heater_state_sensor_->publish_state(state_str);
     if (flame_sensor_)         flame_sensor_->publish_state(new_flame);
@@ -583,19 +661,24 @@ void EsparCanComponent::send_frame_(uint32_t id, const uint8_t *data, uint8_t le
 
 // Called from YAML switch lambda (Espar CAN Standby).
 // Suspending TX lets a real EasyStart Pro / EasyScan share the bus: the WeAct
-// emulates the Pro's identity, so both active at once is an ADR/identity
-// collision (fault P000342, "invalid configuration — check ADR coding").
+// emulates the Pro (same CAN IDs); both transmitting has been seen to trigger
+// fault P000342 ("invalid configuration — check ADR coding").
 // Resuming triggers a fresh init burst to re-establish the handshake.
 void EsparCanComponent::set_tx_standby(bool s) {
   if (s == tx_standby_) return;
   tx_standby_ = s;
   if (s) {
     ESP_LOGI(TAG, "CAN TX standby ON — all outbound frames suspended");
+    if (foreign_fault_published_) { foreign_fault_published_ = false; publish_fault_("OK"); }
     // Drop command state so we re-sync cleanly on resume
     cmd_heating_      = false;
     cmd_fan_          = false;
   } else {
     ESP_LOGI(TAG, "CAN TX standby OFF — re-running init burst");
+    // Re-arm other-controller detection: if a controller was seen during
+    // standby and is still talking, its next frame raises the fault now that
+    // the WeAct is transmitting again.
+    foreign_ctrl_present_ = false;
     restart_handshake_();
   }
 }
@@ -750,6 +833,51 @@ void EsparCanComponent::handle_idle_lock_(uint32_t now) {
   }
 }
 
+// ── Anti-short-cycle helpers ─────────────────────────────────────────────
+uint8_t EsparCanComponent::starts_last_hour_(uint32_t now) const {
+  uint8_t n = 0;
+  for (uint8_t i = 0; i < START_LOG_LEN; i++)
+    if (start_log_[i] && (now - start_log_[i]) < 3600000UL) n++;
+  return n;
+}
+
+void EsparCanComponent::record_start_(uint32_t now) {
+  start_log_[start_log_idx_] = now ? now : 1;
+  start_log_idx_ = (start_log_idx_ + 1) % START_LOG_LEN;
+}
+
+// Log once per reason change: 1=min-off, 2=max starts/h, 3=min-run
+void EsparCanComponent::log_ascs_hold_(uint8_t reason, uint32_t wait_ms) {
+  (void) wait_ms;
+  if (reason == ascs_hold_reason_) return;
+  ascs_hold_reason_ = reason;
+  switch (reason) {
+    case 1: ESP_LOGI(TAG, "Anti-short-cycle: restart held, min off time (%lus left)", (unsigned long)(wait_ms / 1000)); break;
+    case 2: ESP_LOGI(TAG, "Anti-short-cycle: restart held, %u starts in the last hour", (unsigned) max_starts_per_hour_); break;
+    case 3: ESP_LOGI(TAG, "Anti-short-cycle: still heating, min run time (%lus left)", (unsigned long)(wait_ms / 1000)); break;
+  }
+}
+
+// Another controller's frames (0x60D / 0x54–0x57) seen on the bus.
+void EsparCanComponent::note_foreign_controller_(const twai_message_t &msg) {
+  foreign_ctrl_last_ms_ = millis();
+  // ID only comes from 0x60D. D3 bit 0 toggles on OEM controllers; mask it so the logged ID is stable
+  if (msg.identifier == 0x60D) {
+    foreign_ctrl_id_[0] = msg.data[2] & 0xFE; foreign_ctrl_id_[1] = msg.data[3]; foreign_ctrl_id_[2] = msg.data[4];
+  }
+  if (foreign_ctrl_present_) return;
+  foreign_ctrl_present_ = true;
+  if (tx_standby_) {
+    ESP_LOGI(TAG, "Other controller on bus (first frame 0x%03lX; 0x60D ID %02X %02X %02X if seen) — WeAct in CAN standby", (unsigned long) msg.identifier,
+             foreign_ctrl_id_[0], foreign_ctrl_id_[1], foreign_ctrl_id_[2]);
+  } else {
+    ESP_LOGW(TAG, "Other controller on bus (first frame 0x%03lX; 0x60D ID %02X %02X %02X if seen) while WeAct is transmitting — enable CAN Standby", (unsigned long) msg.identifier,
+             foreign_ctrl_id_[0], foreign_ctrl_id_[1], foreign_ctrl_id_[2]);
+    publish_fault_("OTHER CONTROLLER ON BUS — enable CAN Standby");
+    foreign_fault_published_ = true;
+  }
+}
+
 // 0x65 periodic status burst — 4 frames per group, D3 cycles 01→02→03
 // Groups spaced 10s apart; frames within a group spaced 150ms apart
 void EsparCanComponent::handle_status_burst_(uint32_t now) {
@@ -796,7 +924,9 @@ void EsparCanComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "  Pause mode: %s", pause_mode_fan_ ? "fan (FAN_ONLY at setpoint)" : "off (IDLE at setpoint)");
   ESP_LOGCONFIG(TAG, "  Controller ID (0x60D D3-D5): %02X %02X %02X | 0x62 D8: 0x%02X",
                 ctrl_id_[0], ctrl_id_[1], ctrl_id_[2], init_62_last_);
-  ESP_LOGCONFIG(TAG, "  Thermostat hysteresis: %.1f°C", HYSTERESIS_C);
+  ESP_LOGCONFIG(TAG, "  Thermostat hysteresis: %.2f°C", hysteresis_c_);
+  ESP_LOGCONFIG(TAG, "  Anti-short-cycle: min run %lus, min off %lus, max starts/h %u",
+                (unsigned long)(min_run_ms_ / 1000), (unsigned long)(min_off_ms_ / 1000), (unsigned) max_starts_per_hour_);
   ESP_LOGCONFIG(TAG, "  Auto-clear IDLE lock: %s", auto_clear_idle_lock_ ? "yes" : "no");
   LOG_TEXT_SENSOR("  ",    "Heater State",     heater_state_sensor_);
   LOG_BINARY_SENSOR("  ",  "Heating",          flame_sensor_);

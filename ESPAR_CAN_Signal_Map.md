@@ -48,6 +48,10 @@ During HEATING (D1=0x09):
             into each burn on one B2L (~2,100 m); never set on another B2L near sea level.
             NOT a reliable flame signal — use D1=0x09 (HEATING) instead.
 
+During IDLE (D1=0x03):
+  D2=0x08   Cooldown / after-run (~4 min after heating, blower purging) -> component: COOLDOWN
+  D2=0x00   Truly idle
+
 During FAULT (D1=0x0B):
   D2=0x08   Always 0x08 during active fault (both capture types)
 

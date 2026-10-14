@@ -150,7 +150,15 @@ espar_can:
                                         # The heater accepted every value tested; leave as-is unless
                                         # you're doing multi-controller experiments.
 
-  heater_state:                         # optional text sensor: STARTUP/IDLE/HEATING/FAN/UNKNOWN
+  # Anti-short-cycle (issue #9) — all disabled by default. They gate only the
+  # thermostat's own on/off decisions; HA mode/setpoint changes act immediately.
+  hysteresis: 1.0                       # optional; dead-band below target before restarting,
+                                        # in cabin_temp_unit degrees (default 0.3 °C ≈ 0.5 °F)
+  min_run_time: 15min                   # optional; once lit, keep heating at least this long (default 0)
+  min_off_time: 10min                   # optional; after a stop, wait at least this long (default 0)
+  max_starts_per_hour: 3                # optional; cap on thermostat starts per rolling hour (default 0 = off)
+
+  heater_state:                         # optional text sensor: STARTUP/IDLE/HEATING/FAN/COOLDOWN/UNKNOWN
     name: "Espar Heater State"
   flame_active:                         # optional binary sensor: true while heater reports HEATING (0x2C4 D1=0x09)
     name: "Espar Heating"
@@ -172,7 +180,9 @@ If the heater's supply is interrupted (battery disconnect, low-voltage cutoff, p
 
 ## OEM diagnostics — CAN standby mode
 
-Eberspächer supports multiple control elements on the CAN bus — each gets its own address via ADR coding (an EasyStart Pro and EasyStart Remote+ can run together). The WeAct currently *emulates the EasyStart Pro*, so running it alongside a real EasyStart Pro puts two devices with the same identity on the bus — an invalid configuration that can trigger fault **P000342** ("invalid configuration — check ADR coding"). This is an addressing collision, not a controller-count limit.
+If another controller (e.g. a real EasyStart Pro) appears on the bus while the WeAct is transmitting, the component sees its 0x60D or 0x54–0x57 frames and sets *Espar Fault* = `OTHER CONTROLLER ON BUS — enable CAN Standby`. Its frames (0x54–0x57, 0x60D, 0x65 and the init burst) are logged at debug level, not raised as unknown-ID faults.
+
+The WeAct currently *emulates the EasyStart Pro*: it sends the same CAN IDs (0x54–0x57, 0x60D, 0x65). With a real Pro also transmitting, this has been seen to trigger fault **P000342** ("invalid configuration — check ADR coding"). ADR there is Eberspächer's dangerous-goods mode for hazardous-cargo vehicles, not a bus address (thanks to Greg for spotting it); why the two controllers trigger it is unknown. How a second control element identifies itself is unknown ([#15](https://github.com/TrooperDuper/espar-airtronic-esphome/issues/15)). Until then, turn on CAN Standby whenever a real Pro is on the bus.
 
 The `Espar CAN Standby` switch (defined in `espar-heater.yaml`) suspends all outbound frames from the WeAct without physically unplugging anything. Turning it ON from HA before connecting an OEM tool prevents the conflict. Turning it OFF afterwards automatically re-runs the CAN handshake.
 
@@ -193,7 +203,7 @@ The `Espar CAN Standby` switch (defined in `espar-heater.yaml`) suspends all out
 | Entity | Type | Description |
 |---|---|---|
 | `climate.espar_heater` | Climate | Main control entity |
-| `sensor.espar_heater_state` | Text sensor | STARTUP / IDLE / HEATING / FAN / UNKNOWN |
+| `sensor.espar_heater_state` | Text sensor | STARTUP / IDLE / HEATING / FAN / COOLDOWN / UNKNOWN. COOLDOWN = after-run (blower purging, ~4 min after heating); the climate action shows *Fan* meanwhile. |
 | `binary_sensor.espar_heating` | Binary sensor | True while the heater reports HEATING (0x2C4 D1=0x09), including the ignition ramp — not a combustion confirmation. YAML key: `flame_active`. Formerly `binary_sensor.espar_flame_active` (see Upgrading below). |
 | `binary_sensor.espar_status_flag_0x20` | Binary sensor | Raw 0x2C4 D2 bit5 — diagnostic, meaning unconfirmed |
 | `binary_sensor.espar_connected` | Binary sensor | True when 0x625 heartbeat present |
@@ -239,6 +249,7 @@ The diagnostic `flag_0x20` sensor ("Espar Status Flag 0x20") is new and only app
 |---|---|
 | Dim green | Connected and idle |
 | Amber (red+orange) | Heating active |
+| Dim orange | Cooldown (after-run blower) |
 | Blue | Fan only |
 | Red pulsing | Fault / error |
 | Off | Not connected to heater |

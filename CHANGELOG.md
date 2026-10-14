@@ -8,6 +8,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added (after #14)
+- **COOLDOWN heater state:** D1=IDLE with D2 bit 3 and no fault code = after-run blower. *Espar Heater State* shows `COOLDOWN` and the climate action shows *Fan* until it's truly idle. The example YAML adds a dim-orange LED colour.
+- **Anti-short-cycle options (#9):** `hysteresis`, `min_run_time`, `min_off_time`, `max_starts_per_hour`. All off by default. They gate only thermostat-driven starts and stops; HA mode/setpoint changes and faults act immediately. The thermostat is re-evaluated every 5 s so timers expire on their own.
+- **Other controller on the bus:** another controller's 0x60D or 0x54–0x57 frames while the WeAct is transmitting set *Espar Fault* = `OTHER CONTROLLER ON BUS — enable CAN Standby` (cleared when it disappears or Standby is turned on). 0x60D, 0x65 and the init-burst IDs are now treated like 0x54–0x57: logged at debug, not raised as unknown-ID faults.
+- Other-controller detection is re-armed when CAN Standby is turned off, so a Pro left on the bus raises the fault instead of being silently ignored.
+- An unmapped 0x2C4 state (shown as `UNKNOWN`) now logs its raw D1–D4 bytes at WARN, so it can be identified.
+
+### Changed (after #14)
+- CAN bus errors are logged as one summary every 5 s instead of one line per error. With the heater unpowered nothing ACKs the WeAct's frames and the error count climbs by thousands per second, which previously stalled the main loop.
+- Climate entity minimum setpoint lowered from 15 °C (59 °F) to 10 °C (50 °F), matching the heater's own setpoint range (Airtronic 3 Technical Description §4.4). Override with the standard `visual:` block if needed.
+
 ### Fixed
 - **Heater ignored commands after a power interruption while reporting OK** ([#14](https://github.com/TrooperDuper/espar-airtronic-esphome/issues/14)). The heater often comes back in IDLE with D3 = `0x04` and ignores HEAT/FAN until 0x54 goes FAN → IDLE. The component now reports it (*Espar Fault* = `IDLE LOCK: …`) and releases it automatically (`auto_clear_idle_lock`, default on: 45 s wait, FAN 6 s, IDLE 5 s, up to 3 tries). Verified 2/2 on hardware.
 - Heartbeat-timeout underflow that caused connect/disconnect flapping (sample `now` after RX).
@@ -24,7 +35,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### ⚠️ Breaking — entity rename
 - The example config renames the `flame_active` entity from **"Espar Flame Active"** to **"Espar Heating"** (it's on during the ignition ramp too, so "flame" overstated it). In Home Assistant this creates a new entity (`binary_sensor.espar_heating`) and leaves the old `binary_sensor.espar_flame_active` behind as an unavailable, orphaned entity. Delete it and update any automations/dashboards that used it. See **Upgrading** in `esphome/README.md` for step-by-step cleanup, including how to keep the old entity ID.
-- P000342 corrected to "invalid configuration — check ADR coding": multiple controllers are supported; the conflict is the WeAct cloning the EasyStart Pro's identity.
+- P000342 corrected to "invalid configuration — check ADR coding" (not "too many CAN controllers"). ADR is the European dangerous-goods agreement (Eberspächer's ADR mode for hazardous-cargo vehicles), not a bus address; the earlier "ADR address" reading was wrong. Thanks to Greg for spotting it. The WeAct + Pro conflict is likely both sending the same CAN IDs.
 - Status LED migrated from deprecated `neopixelbus` to `esp32_rmt_led_strip`.
 
 ### Documentation

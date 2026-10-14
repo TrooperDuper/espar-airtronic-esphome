@@ -65,6 +65,8 @@
 
 > Bits 0–1, 3–4 and bit 7 have not been observed non-zero. Each likely maps to a different fault category. Confirmed via captures `Espar CAN-Bus outlet obstruction.csv` and `Espar CAN-Bus fuel line pinched.csv`.
 
+**D2 during IDLE (D1=`0x03`):** `0x08` = cooldown / after-run (blower purging, ~4 min after heating; seen on two B2Ls), then `0x00` = truly idle. The component reports `COOLDOWN` when D1=`0x03`, D2 bit 3 set and D3=`0x00`.
+
 **D2 sub-states during HEATING:**
 
 | D2 value | Meaning |
@@ -266,8 +268,8 @@ Send once at startup in this order, then repeat every 150ms until the heater's 0
 
 ## Important notes
 
-### Controller addressing (ADR coding)
-Eberspächer supports multiple control elements on the bus — each is assigned its own ADR address (e.g. an EasyStart Pro and EasyStart Remote+ run together, per the OEM manual and confirmed by users), so this is not a controller-count limit. The WeAct currently *emulates the EasyStart Pro* (same CAN IDs and identity), so running it alongside a real EasyStart Pro puts two devices with the same identity on the bus — an invalid configuration that can trigger fault P000342 ("invalid configuration — check ADR coding") and may lock the control box. As a precaution, use the CAN Standby switch (or disconnect the WeAct) before connecting a real EasyStart Pro / OEM diagnostic tool. Exact trigger conditions are still under investigation.
+### Two controllers on one heater
+P000342 means "invalid configuration — check ADR coding". **ADR** is the European agreement on the transport of dangerous goods by road. Eberspächer heaters have an **ADR mode** for vehicles carrying hazardous cargo: manual start only, forced shut-down when the vehicle engine stops or an unloading pump starts, and a maximum 40 s after-run, set up through extra wiring (D+, auxiliary-drive signal) and an ADR jumper. The heater's control box must also be coded for ADR mode with Eberspächer's EasyScan diagnostic tool, and only the CAN-capable EasyStart Pro may be used as the control element in ADR mode ([Eberspächer Technical Description — Airtronic 3, 25.2953.90.0001.0B, 02.2022, §4.2 "Notes on ADR mode", p. 36](https://backend.seatronic.no/mpattachment/file/download/id/7088)). It is **not** a bus address. Earlier versions of these docs got that wrong; thanks to Greg for spotting it. P000342 has been seen with the WeAct and a real EasyStart Pro both transmitting. Why is unknown; one possibility (unconfirmed) is that the two controllers' init bursts carry conflicting configuration bytes. How a second control element identifies itself on the bus is also unknown ([#15](https://github.com/TrooperDuper/espar-airtronic-esphome/issues/15)). Use CAN Standby (or disconnect the WeAct) before connecting a real EasyStart Pro / OEM diagnostic tool. Exact trigger conditions are still under investigation.
 
 ### Fault state is in 0x2C4 (D1=0x0B, D3=fault code)
 The heater signals faults via the primary status frame — no separate fault frame ID is needed for the two confirmed fault categories. `D1=0x0B` means fault active; `D3` carries the fault code (`0x20`=flame loss, `0x40`=overtemp). The EasyScan diagnostic tool uses a separate CAN request/response protocol whose frame IDs have not yet been captured — that protocol would give P-code granularity beyond what D3 provides. See [fault-codes.md](fault-codes.md) for full details.
