@@ -402,13 +402,15 @@ void EsparCanComponent::handle_rx_() {
           break;
 
         case 0x60D:
-          // Another controller's heartbeat (we never receive our own frames).
-          note_foreign_controller_(msg);
-          [[fallthrough]];
         case 0x54:
         case 0x55:
         case 0x56:
         case 0x57:
+          // Another controller's heartbeat or commands (we never receive our own
+          // frames). An EasyStart Pro stops 0x60D ~3–4 min after its last button
+          // press but keeps 0x54–0x57 going, so both count as presence.
+          note_foreign_controller_(msg);
+          [[fallthrough]];
         case 0x65:
         // Init burst sent by a controller at power-up / handshake
         case 0x5C: case 0x5D: case 0x5E: case 0x5F: case 0x60: case 0x61:
@@ -416,9 +418,9 @@ void EsparCanComponent::handle_rx_() {
         case 0x69: case 0x6A: case 0x6B: case 0x6C: case 0x6D: case 0x10A:
           // OEM controller command frames (e.g. a real EasyStart Pro sharing the
           // bus). The WeAct emulates these same IDs, so observing them is expected,
-          // not a fault. Log at debug for RE only — do NOT publish a fault or drive
-          // the status LED red.
-          ESP_LOGD(TAG,
+          // not a fault. Log at verbose for RE only (~20 frames/s with a Pro on the
+          // bus) — do NOT publish a fault or drive the status LED red.
+          ESP_LOGV(TAG,
             "OEM controller frame 0x%03lX [%u]: %02X %02X %02X %02X %02X %02X %02X %02X",
             (unsigned long)msg.identifier, msg.data_length_code,
             msg.data[0], msg.data[1], msg.data[2], msg.data[3],
@@ -641,8 +643,8 @@ void EsparCanComponent::send_frame_(uint32_t id, const uint8_t *data, uint8_t le
 
 // Called from YAML switch lambda (Espar CAN Standby).
 // Suspending TX lets a real EasyStart Pro / EasyScan share the bus: the WeAct
-// emulates the Pro's identity, so both active at once is an ADR/identity
-// collision (fault P000342, "invalid configuration — check ADR coding").
+// emulates the Pro (same CAN IDs), so both transmitting corrupts each other's
+// frames (seen to trigger P000342; ADR there is the dangerous-goods mode).
 // Resuming triggers a fresh init burst to re-establish the handshake.
 void EsparCanComponent::set_tx_standby(bool s) {
   if (s == tx_standby_) return;
@@ -834,18 +836,20 @@ void EsparCanComponent::log_ascs_hold_(uint8_t reason, uint32_t wait_ms) {
   }
 }
 
-// Another controller's 0x60D heartbeat seen on the bus.
+// Another controller's frames (0x60D / 0x54–0x57) seen on the bus.
 void EsparCanComponent::note_foreign_controller_(const twai_message_t &msg) {
   foreign_ctrl_last_ms_ = millis();
-  // D3 bit 0 toggles on OEM controllers; mask it so the logged ID is stable
-  foreign_ctrl_id_[0] = msg.data[2] & 0xFE; foreign_ctrl_id_[1] = msg.data[3]; foreign_ctrl_id_[2] = msg.data[4];
+  // ID only comes from 0x60D. D3 bit 0 toggles on OEM controllers; mask it so the logged ID is stable
+  if (msg.identifier == 0x60D) {
+    foreign_ctrl_id_[0] = msg.data[2] & 0xFE; foreign_ctrl_id_[1] = msg.data[3]; foreign_ctrl_id_[2] = msg.data[4];
+  }
   if (foreign_ctrl_present_) return;
   foreign_ctrl_present_ = true;
   if (tx_standby_) {
-    ESP_LOGI(TAG, "Other controller on bus (0x60D ID %02X %02X %02X) — WeAct in CAN standby",
+    ESP_LOGI(TAG, "Other controller on bus (first frame 0x%03lX; 0x60D ID %02X %02X %02X if seen) — WeAct in CAN standby", (unsigned long) msg.identifier,
              foreign_ctrl_id_[0], foreign_ctrl_id_[1], foreign_ctrl_id_[2]);
   } else {
-    ESP_LOGW(TAG, "Other controller on bus (0x60D ID %02X %02X %02X) while WeAct is transmitting — enable CAN Standby",
+    ESP_LOGW(TAG, "Other controller on bus (first frame 0x%03lX; 0x60D ID %02X %02X %02X if seen) while WeAct is transmitting — enable CAN Standby", (unsigned long) msg.identifier,
              foreign_ctrl_id_[0], foreign_ctrl_id_[1], foreign_ctrl_id_[2]);
     publish_fault_("OTHER CONTROLLER ON BUS — enable CAN Standby");
     foreign_fault_published_ = true;

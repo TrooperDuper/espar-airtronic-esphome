@@ -184,7 +184,7 @@ class EsparCanComponent : public climate::Climate, public Component {
   bool  pause_mode_fan_{false};
   // When true, all outbound CAN frames are suppressed (TX standby).
   // Use when a real EasyStart Pro is on the bus: the WeAct emulates the Pro's
-  // identity, so both active is an ADR collision (P000342, invalid config).
+  // CAN IDs, so both transmitting corrupts each other's frames (P000342 seen).
   bool  tx_standby_{false};
   // Controller identity. Defaults = the maintainer's EasyStart Pro. The heater
   // accepted any ID tested (incl. made-up and MAC-derived) and doesn't check 0x62 D8.
