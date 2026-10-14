@@ -675,6 +675,10 @@ void EsparCanComponent::set_tx_standby(bool s) {
     cmd_fan_          = false;
   } else {
     ESP_LOGI(TAG, "CAN TX standby OFF — re-running init burst");
+    // Re-arm other-controller detection: if a controller was seen during
+    // standby and is still talking, its next frame raises the fault now that
+    // the WeAct is transmitting again.
+    foreign_ctrl_present_ = false;
     restart_handshake_();
   }
 }
