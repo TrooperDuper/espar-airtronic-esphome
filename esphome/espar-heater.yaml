@@ -238,6 +238,27 @@ espar_can:
                   brightness: 10%
                   effect: "None"
 
+  # ── Heater diagnostics (optional, read-only) ───────────────────────────
+  # Reads values over the heater's diagnostic channel (UDS 0x7A0 → 0x73C).
+  # Off unless this block is present. Nothing is written, reset or cleared.
+  # All keys and what they mean: esphome/README.md, "Heater diagnostics".
+  # diagnostics:
+  #   update_interval: 10s        # while active; once a minute while idle
+  #   flame_detected:
+  #     name: "Espar Flame"
+  #   combustion_phase:
+  #     name: "Espar Phase"
+  #   flame_temperature:
+  #     name: "Espar Flame Temperature"
+  #   supply_voltage:
+  #     name: "Espar Supply Voltage"
+  #   fuel_rate:
+  #     name: "Espar Fuel Rate"
+  #   operating_hours:
+  #     name: "Espar Operating Hours"
+  #   fault_memory:
+  #     name: "Espar Fault Memory"
+
 # ── Onboard WS2812 RGB LED (GPIO4) ───────────────────────────────────────────
 # Amber=heating  Blue=fan  Dim green=idle/connected  Red pulse=fault
 light:

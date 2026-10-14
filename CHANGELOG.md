@@ -8,6 +8,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — heater diagnostics
+- **Optional, read-only diagnostics over UDS** (0x7A0 → 0x73C): a new `diagnostics:` block on `espar_can`. Off unless the block is present. Only ReadDataByIdentifier and ReadDTCInformation (`19 02 08`) are sent; nothing is written, reset or cleared, and nothing is sent in CAN Standby or while the heater isn't connected. Entities include real flame detection, combustion phase, flame and intake temperature, supply voltage, fuel pump frequency, glow plug, fuel rate and lifetime fuel, the heater's operating-hour counters, versions/part number and the **fault memory with P-codes** (read on connect, on a fault, after each run, or via `read_fault_memory()`). Polled every `update_interval` (default 10 s) while the heater is active, once a minute while idle. See *Heater diagnostics* in `esphome/README.md` and `docs/uds-diagnostics.md`.
+- Diagnostic answers on 0x73C and another tester's requests on 0x7A0 are no longer reported as unknown IDs.
+
 ### Added (after #14)
 - **COOLDOWN heater state:** D1=IDLE with D2 bit 3 and no fault code = after-run blower. *Espar Heater State* shows `COOLDOWN` and the climate action shows *Fan* until it's truly idle. The example YAML adds a dim-orange LED colour.
 - **Anti-short-cycle options (#9):** `hysteresis`, `min_run_time`, `min_off_time`, `max_starts_per_hour`. All off by default. They gate only thermostat-driven starts and stops; HA mode/setpoint changes and faults act immediately. The thermostat is re-evaluated every 5 s so timers expire on their own.

@@ -25,6 +25,11 @@
 //      0x65   ~10s    Status burst — 4 frames, D3 cycles 01→02→03
 //      0x5C–0x10A     Init burst (sent at startup until 0x625 received)
 //
+//    DIAGNOSTICS  (optional `diagnostics:` block; read-only, off by default)
+//      0x7A0 → 0x73C  UDS ReadDataByIdentifier (0x22) and ReadDTCInformation
+//                     (0x19 02 08) over ISO-TP, padding AA. Nothing is written,
+//                     reset or cleared. See docs/uds-diagnostics.md.
+//
 //  Climate entity:
 //    Mode HEAT     → thermostat: send HEAT:heat_setpoint_f when below target,
 //                                send IDLE when above target (+hysteresis)
@@ -87,6 +92,50 @@ static constexpr uint32_t IDLE_LOCK_SETTLE_MS   =  5000;  // forced IDLE after t
 static constexpr uint32_t IDLE_LOCK_RETRY_MS    = 20000;  // gap between attempts
 static constexpr uint8_t  IDLE_LOCK_MAX_TRIES   =     3;
 
+// ── UDS diagnostics (ISO 14229 over ISO-TP), read-only ───────────────────
+static constexpr uint32_t DIAG_REQUEST_ID        = 0x7A0;  // tester → heater
+static constexpr uint32_t DIAG_RESPONSE_ID       = 0x73C;  // heater → tester
+static constexpr uint32_t DIAG_TIMEOUT_MS        =   500;  // per request
+static constexpr uint32_t DIAG_GAP_MS            =    50;  // pause between requests
+static constexpr uint32_t DIAG_IDLE_INTERVAL_MS  = 60000;  // sweep period while the heater idles
+static constexpr uint32_t DIAG_HOURS_INTERVAL_MS = 60000;  // FD17 counters move once a minute
+static constexpr uint8_t  DIAG_MAX_TIMEOUTS      =    10;  // consecutive → fall back to the idle period
+static constexpr uint8_t  DIAG_PAD               =  0xAA;
+static constexpr size_t   DIAG_BUF_SIZE          =    64;  // longest polled answer is 31 bytes
+static constexpr uint8_t  UDS_READ_DATA          =  0x22;  // ReadDataByIdentifier
+static constexpr uint8_t  UDS_READ_DTC           =  0x19;  // ReadDTCInformation
+static constexpr uint16_t BLOWER_LEVEL_OFFSET    = 20000;  // FD08 reads 20000 with the blower stopped
+
+// Requests of one sweep, in order (flame first — it is the time-critical one)
+enum DiagItem : uint8_t {
+  DIAG_FLAME = 0,      // FD0F
+  DIAG_TEMPERATURES,   // FD01
+  DIAG_VOLTAGE,        // FD04
+  DIAG_FUEL_PUMP,      // FD0D
+  DIAG_GLOW_PLUG,      // FD0A
+  DIAG_PHASE,          // FD10
+  DIAG_BLOWER,         // FD08
+  DIAG_FUEL,           // FD11
+  DIAG_POWER_DEMAND,   // FD0E
+  DIAG_BURN_TIME,      // FD2A
+  DIAG_REGULATION,     // FD45
+  DIAG_ECU_TEMP,       // FD35
+  DIAG_PRESSURE,       // FD36
+  DIAG_COUNTERS,       // FD17
+  DIAG_STARTS,         // FD06
+  DIAG_PUMP_STROKES,   // FD6A
+  DIAG_SW_VERSION,     // F195
+  DIAG_HW_VERSION,     // F193
+  DIAG_PART_NUMBER,    // F1F0
+  DIAG_FAULT_MEMORY,   // not a data identifier: ReadDTCInformation 19 02 08
+  DIAG_ITEM_COUNT,
+};
+static constexpr uint16_t DIAG_DIDS[DIAG_ITEM_COUNT] = {
+  0xFD0F, 0xFD01, 0xFD04, 0xFD0D, 0xFD0A, 0xFD10, 0xFD08, 0xFD11, 0xFD0E, 0xFD2A,
+  0xFD45, 0xFD35, 0xFD36, 0xFD17, 0xFD06, 0xFD6A, 0xF195, 0xF193, 0xF1F0,
+  0x0208,  // sub-function 02 (by status mask), mask 08 (confirmed) — sent with service 19
+};
+
 // ── GPIO ─────────────────────────────────────────────────────────────────
 static constexpr gpio_num_t CAN_TX_PIN = GPIO_NUM_27;
 static constexpr gpio_num_t CAN_RX_PIN = GPIO_NUM_26;
@@ -131,6 +180,42 @@ class EsparCanComponent : public climate::Climate, public Component {
   void set_connected_sensor(binary_sensor::BinarySensor *s) { connected_sensor_ = s; }
   void set_fault_sensor(text_sensor::TextSensor *s)         { fault_sensor_ = s; }
 
+  // ── Diagnostics (UDS, read-only) — only active with a `diagnostics:` block ──
+  void set_diagnostics_enabled(bool e)                             { diag_enabled_ = e; }
+  void set_diagnostics_interval(uint32_t ms)                       { diag_interval_ms_ = ms; }
+  void set_flame_detected_sensor(binary_sensor::BinarySensor *s)   { flame_detected_sensor_ = s; }
+  void set_combustion_state_sensor(text_sensor::TextSensor *s)     { combustion_state_sensor_ = s; }
+  void set_flame_temperature_sensor(sensor::Sensor *s)             { flame_temperature_sensor_ = s; }
+  void set_intake_temperature_sensor(sensor::Sensor *s)            { intake_temperature_sensor_ = s; }
+  void set_supply_voltage_sensor(sensor::Sensor *s)                { supply_voltage_sensor_ = s; }
+  void set_fuel_pump_frequency_sensor(sensor::Sensor *s)           { fuel_pump_frequency_sensor_ = s; }
+  void set_glow_plug_sensor(binary_sensor::BinarySensor *s)        { glow_plug_sensor_ = s; }
+  void set_glow_plug_power_sensor(sensor::Sensor *s)               { glow_plug_power_sensor_ = s; }
+  void set_combustion_phase_sensor(text_sensor::TextSensor *s)     { combustion_phase_sensor_ = s; }
+  void set_phase_step_sensor(sensor::Sensor *s)                    { phase_step_sensor_ = s; }
+  void set_phase_time_sensor(sensor::Sensor *s)                    { phase_time_sensor_ = s; }
+  void set_blower_level_sensor(sensor::Sensor *s)                  { blower_level_sensor_ = s; }
+  void set_fuel_rate_sensor(sensor::Sensor *s)                     { fuel_rate_sensor_ = s; }
+  void set_fuel_total_sensor(sensor::Sensor *s)                    { fuel_total_sensor_ = s; }
+  void set_power_demand_sensor(sensor::Sensor *s)                  { power_demand_sensor_ = s; }
+  void set_burn_time_sensor(sensor::Sensor *s)                     { burn_time_sensor_ = s; }
+  void set_heater_setpoint_sensor(sensor::Sensor *s)               { heater_setpoint_sensor_ = s; }
+  void set_heater_temperature_sensor(sensor::Sensor *s)            { heater_temperature_sensor_ = s; }
+  void set_control_unit_temperature_sensor(sensor::Sensor *s)      { control_unit_temperature_sensor_ = s; }
+  void set_air_pressure_sensor(sensor::Sensor *s)                  { air_pressure_sensor_ = s; }
+  void set_operating_hours_sensor(sensor::Sensor *s)               { operating_hours_sensor_ = s; }
+  void set_band_hours_sensor(uint8_t band, sensor::Sensor *s)      { if (band < 6) band_hours_sensor_[band] = s; }
+  void set_start_stop_count_sensor(sensor::Sensor *s)              { start_stop_count_sensor_ = s; }
+  void set_fuel_pump_strokes_sensor(sensor::Sensor *s)             { fuel_pump_strokes_sensor_ = s; }
+  void set_software_version_sensor(text_sensor::TextSensor *s)     { software_version_sensor_ = s; }
+  void set_hardware_version_sensor(text_sensor::TextSensor *s)     { hardware_version_sensor_ = s; }
+  void set_part_number_sensor(text_sensor::TextSensor *s)          { part_number_sensor_ = s; }
+  void set_fault_memory_sensor(text_sensor::TextSensor *s)         { fault_memory_sensor_ = s; }
+
+  // Read the heater's fault memory now (also done on connect, on a fault and after
+  // each run). Callable from YAML:  - lambda: id(espar).read_fault_memory();
+  void read_fault_memory() { diag_fault_read_requested_ = true; diag_sweep_requested_ = true; }
+
  protected:
   // ── TX helpers ────────────────────────────────────────────────────────
   void send_frame_(uint32_t id, const uint8_t *data, uint8_t len, bool ext = false);
@@ -147,6 +232,15 @@ class EsparCanComponent : public climate::Climate, public Component {
   // Marks the heater alive (latches connection + refreshes liveness timestamp).
   // Called for both the 0x625 heartbeat and 0x2C4 status frames.
   void note_heater_alive_();
+
+  // ── UDS diagnostics ───────────────────────────────────────────────────
+  void handle_diagnostics_(uint32_t now);
+  bool diag_wanted_(uint8_t item, uint32_t now) const;
+  void diag_send_request_(uint8_t item);
+  void handle_diag_frame_(const twai_message_t &msg);
+  void diag_process_response_(const uint8_t *data, uint16_t len);
+  // Starting, heating, fan or cooldown — anything but plain IDLE
+  bool heater_active_() const { return heater_d1_state_ != HEATER_STATE_IDLE || cooldown_; }
 
   // ── Thermostat logic ─────────────────────────────────────────────────
   void evaluate_thermostat_();
@@ -170,6 +264,36 @@ class EsparCanComponent : public climate::Climate, public Component {
   binary_sensor::BinarySensor *connected_sensor_{nullptr};
   text_sensor::TextSensor    *fault_sensor_{nullptr};
   sensor::Sensor             *current_temp_sensor_{nullptr};
+  // Diagnostic (UDS) entities
+  binary_sensor::BinarySensor *flame_detected_sensor_{nullptr};
+  text_sensor::TextSensor     *combustion_state_sensor_{nullptr};
+  sensor::Sensor              *flame_temperature_sensor_{nullptr};
+  sensor::Sensor              *intake_temperature_sensor_{nullptr};
+  sensor::Sensor              *supply_voltage_sensor_{nullptr};
+  sensor::Sensor              *fuel_pump_frequency_sensor_{nullptr};
+  binary_sensor::BinarySensor *glow_plug_sensor_{nullptr};
+  sensor::Sensor              *glow_plug_power_sensor_{nullptr};
+  text_sensor::TextSensor     *combustion_phase_sensor_{nullptr};
+  sensor::Sensor              *phase_step_sensor_{nullptr};
+  sensor::Sensor              *phase_time_sensor_{nullptr};
+  sensor::Sensor              *blower_level_sensor_{nullptr};
+  sensor::Sensor              *fuel_rate_sensor_{nullptr};
+  sensor::Sensor              *fuel_total_sensor_{nullptr};
+  sensor::Sensor              *power_demand_sensor_{nullptr};
+  sensor::Sensor              *burn_time_sensor_{nullptr};
+  sensor::Sensor              *heater_setpoint_sensor_{nullptr};
+  sensor::Sensor              *heater_temperature_sensor_{nullptr};
+  sensor::Sensor              *control_unit_temperature_sensor_{nullptr};
+  sensor::Sensor              *air_pressure_sensor_{nullptr};
+  sensor::Sensor              *operating_hours_sensor_{nullptr};
+  // FD17 words 2–7: 0–25 %, 25–50 %, 50–75 %, 75–100 % power, control pause, altitude mode
+  sensor::Sensor              *band_hours_sensor_[6]{};
+  sensor::Sensor              *start_stop_count_sensor_{nullptr};
+  sensor::Sensor              *fuel_pump_strokes_sensor_{nullptr};
+  text_sensor::TextSensor     *software_version_sensor_{nullptr};
+  text_sensor::TextSensor     *hardware_version_sensor_{nullptr};
+  text_sensor::TextSensor     *part_number_sensor_{nullptr};
+  text_sensor::TextSensor     *fault_memory_sensor_{nullptr};
 
   // ── Config ────────────────────────────────────────────────────────────
   // Fixed high setpoint (°F) sent to heater hardware when our thermostat
@@ -272,6 +396,29 @@ class EsparCanComponent : public climate::Climate, public Component {
   bool     locked_out_{false};
   bool     waiting_heat_confirm_{false};
   uint32_t heat_cmd_ms_{0};          // when we last transitioned to cmd_heating=true
+
+  // ── UDS diagnostics ───────────────────────────────────────────────────
+  bool     diag_enabled_{false};      // `diagnostics:` block present
+  uint32_t diag_interval_ms_{10000};  // sweep period while the heater is active
+  bool     diag_sweep_active_{false};
+  bool     diag_sweep_requested_{true};       // sweep once right after connecting / going idle
+  bool     diag_fault_read_requested_{true};  // fault memory is read on demand, not every sweep
+  uint8_t  diag_sweep_pos_{0};
+  uint32_t t_diag_sweep_last_{0};
+  uint32_t t_diag_hours_last_{0};
+  bool     diag_hours_read_{false};
+  uint32_t diag_unsupported_{0};      // bit per DiagItem the heater rejected
+  uint32_t diag_read_once_{0};        // bit per DiagItem that never changes and has been read
+  uint8_t  diag_timeouts_{0};         // consecutive unanswered requests
+  bool     diag_waiting_{false};      // request in flight
+  uint8_t  diag_pending_{0};          // its DiagItem
+  uint32_t t_diag_request_{0};
+  uint32_t t_diag_done_{0};
+  // ISO-TP reassembly
+  uint8_t  diag_buf_[DIAG_BUF_SIZE];
+  uint16_t diag_len_{0};
+  uint16_t diag_expected_{0};
+  uint8_t  diag_next_seq_{0};
 };
 
 }  // namespace espar_can

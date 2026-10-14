@@ -114,6 +114,9 @@ void EsparCanComponent::loop() {
     if (foreign_fault_published_) { foreign_fault_published_ = false; publish_fault_("OK"); }
   }
 
+  // ── UDS diagnostics (only with a `diagnostics:` block) ───────────────
+  handle_diagnostics_(now);
+
   // ── Heartbeat timeout: heater went offline ────────────────────────────
   if (heater_connected_ && (now - heater_last_seen_) > HEARTBEAT_TIMEOUT_MS) {
     heater_connected_ = false;
@@ -441,6 +444,15 @@ void EsparCanComponent::handle_rx_() {
             msg.data[4], msg.data[5], msg.data[6], msg.data[7]);
           break;
 
+        case DIAG_RESPONSE_ID:
+          // Diagnostic answer (ours, or another tester's while the WeAct is quiet)
+          if (diag_enabled_ && !msg.rtr && msg.data_length_code >= 2) handle_diag_frame_(msg);
+          break;
+
+        case DIAG_REQUEST_ID:
+          // Another tester's diagnostic request (EasyScan, an EasyStart Pro's workshop menu)
+          break;
+
         default:
           // Any unknown ID may be a fault-reporting frame from the heater.
           // Log it verbosely so we can RE it later.
@@ -488,6 +500,7 @@ void EsparCanComponent::parse_0x2C4_(const twai_message_t &msg) {
     // First frame of fault state — command idle and report immediately
     ESP_LOGE(TAG, "HEATER FAULT detected! D1=0x0B D2=0x%02X FaultCode=0x%02X", new_sub, new_fault_code);
     post_fault_window_ = true;
+    read_fault_memory();  // fetch the P-code behind it (diagnostics only)
     cmd_heating_ = false;
     cmd_fan_     = false;
 
@@ -580,10 +593,16 @@ void EsparCanComponent::parse_0x2C4_(const twai_message_t &msg) {
     ESP_LOGI(TAG, "Heating confirmed (D1=0x09) — flag 0x20: %s", new_flag_0x20 ? "set" : "clear");
   }
 
+  bool was_active = heater_active_();
+
   heater_d1_state_ = new_state;
   flame_active_    = new_flame;
   flag_0x20_       = new_flag_0x20;
   cooldown_        = new_cooldown;
+
+  // Read the diagnostics once more right after a run, so the entities end on their
+  // resting values instead of the last cooldown sample, and check the fault memory.
+  if (was_active && !heater_active_()) read_fault_memory();
 
   // ── Publish to sensors on state change ────────────────────────────
   if (state_changed) {
@@ -642,6 +661,380 @@ void EsparCanComponent::on_unexpected_id_(const twai_message_t &msg) {
       (unsigned long)msg.identifier,
       msg.data[0], msg.data[1], msg.data[2], msg.data[3]);
     fault_sensor_->publish_state(buf);
+  }
+}
+
+// =============================================================================
+// UDS DIAGNOSTICS — read-only, ReadDataByIdentifier (0x22) and
+// ReadDTCInformation (0x19) on 0x7A0, answers on 0x73C (ISO-TP)
+// =============================================================================
+// The heater answers standard UDS requests in every state (idle, fan, heating,
+// cooldown). One sweep reads each identifier a configured entity needs, one
+// request at a time. Sweeps run every diagnostics update_interval while the
+// heater is active and once a minute while it idles. Nothing is sent in CAN
+// standby or while the heater is not connected. Nothing is written, reset or
+// cleared. Identifiers and scalings: docs/uds-diagnostics.md.
+
+// Whether this item should be requested in the current sweep.
+bool EsparCanComponent::diag_wanted_(uint8_t item, uint32_t now) const {
+  if (diag_unsupported_ & (1u << item)) return false;
+  switch (item) {
+    case DIAG_FLAME:        return flame_detected_sensor_ || combustion_state_sensor_;
+    case DIAG_TEMPERATURES: return flame_temperature_sensor_ || intake_temperature_sensor_;
+    case DIAG_VOLTAGE:      return supply_voltage_sensor_ != nullptr;
+    case DIAG_FUEL_PUMP:    return fuel_pump_frequency_sensor_ != nullptr;
+    case DIAG_GLOW_PLUG:    return glow_plug_sensor_ || glow_plug_power_sensor_;
+    case DIAG_PHASE:        return combustion_phase_sensor_ || phase_step_sensor_ || phase_time_sensor_;
+    case DIAG_BLOWER:       return blower_level_sensor_ != nullptr;
+    case DIAG_FUEL:         return fuel_rate_sensor_ || fuel_total_sensor_;
+    case DIAG_POWER_DEMAND: return power_demand_sensor_ != nullptr;
+    case DIAG_BURN_TIME:    return burn_time_sensor_ != nullptr;
+    case DIAG_REGULATION:   return heater_setpoint_sensor_ || heater_temperature_sensor_;
+    case DIAG_ECU_TEMP:     return control_unit_temperature_sensor_ != nullptr;
+    case DIAG_PRESSURE:     return air_pressure_sensor_ != nullptr;
+    case DIAG_COUNTERS: {
+      bool any = operating_hours_sensor_ != nullptr;
+      for (auto *s : band_hours_sensor_) any = any || s != nullptr;
+      return any && (!diag_hours_read_ || (now - t_diag_hours_last_) >= DIAG_HOURS_INTERVAL_MS);
+    }
+    case DIAG_STARTS:       return start_stop_count_sensor_ != nullptr;
+    case DIAG_PUMP_STROKES: return fuel_pump_strokes_sensor_ != nullptr;
+    case DIAG_SW_VERSION:   return software_version_sensor_ && !(diag_read_once_ & (1u << item));
+    case DIAG_HW_VERSION:   return hardware_version_sensor_ && !(diag_read_once_ & (1u << item));
+    case DIAG_PART_NUMBER:  return part_number_sensor_ && !(diag_read_once_ & (1u << item));
+    case DIAG_FAULT_MEMORY: return fault_memory_sensor_ && diag_fault_read_requested_;
+    default:                return false;
+  }
+}
+
+void EsparCanComponent::handle_diagnostics_(uint32_t now) {
+  if (!diag_enabled_) return;
+
+  if (tx_standby_ || !heater_connected_) {
+    // Nothing to ask; start with a full sweep once the heater is back
+    diag_waiting_              = false;
+    diag_sweep_active_         = false;
+    diag_sweep_requested_      = true;
+    diag_fault_read_requested_ = true;
+    return;
+  }
+
+  if (diag_waiting_) {
+    if ((now - t_diag_request_) < DIAG_TIMEOUT_MS) return;
+    diag_waiting_ = false;
+    t_diag_done_  = now;
+    ESP_LOGD(TAG, "Diagnostics: no answer to %02X %04X",
+             diag_pending_ == DIAG_FAULT_MEMORY ? UDS_READ_DTC : UDS_READ_DATA, DIAG_DIDS[diag_pending_]);
+    if (diag_timeouts_ < DIAG_MAX_TIMEOUTS && ++diag_timeouts_ == DIAG_MAX_TIMEOUTS)
+      ESP_LOGW(TAG, "Diagnostics: heater does not answer on 0x%03lX — retrying once a minute",
+               (unsigned long) DIAG_RESPONSE_ID);
+  }
+
+  if (!diag_sweep_active_) {
+    bool fast = heater_active_() && diag_timeouts_ < DIAG_MAX_TIMEOUTS;
+    uint32_t interval = fast ? diag_interval_ms_ : DIAG_IDLE_INTERVAL_MS;
+    if (!diag_sweep_requested_ && (now - t_diag_sweep_last_) < interval) return;
+    diag_sweep_requested_ = false;
+    diag_sweep_active_    = true;
+    diag_sweep_pos_       = 0;
+    t_diag_sweep_last_    = now;
+  }
+
+  if ((now - t_diag_done_) < DIAG_GAP_MS) return;
+
+  while (diag_sweep_pos_ < DIAG_ITEM_COUNT && !diag_wanted_(diag_sweep_pos_, now))
+    diag_sweep_pos_++;
+  if (diag_sweep_pos_ >= DIAG_ITEM_COUNT) {
+    diag_sweep_active_ = false;
+    return;
+  }
+  diag_send_request_(diag_sweep_pos_++);
+}
+
+// ISO-TP single frame: [03][22][DID hi][DID lo]  or  [03][19][02][08], padded with AA
+void EsparCanComponent::diag_send_request_(uint8_t item) {
+  uint16_t did = DIAG_DIDS[item];
+  uint8_t  sid = (item == DIAG_FAULT_MEMORY) ? UDS_READ_DTC : UDS_READ_DATA;
+  const uint8_t d[8] = {0x03, sid, static_cast<uint8_t>(did >> 8), static_cast<uint8_t>(did & 0xFF),
+                        DIAG_PAD, DIAG_PAD, DIAG_PAD, DIAG_PAD};
+  send_frame_(DIAG_REQUEST_ID, d, 8);
+  diag_pending_   = item;
+  diag_waiting_   = true;
+  diag_expected_  = 0;
+  diag_len_       = 0;
+  t_diag_request_ = millis();
+}
+
+// Reassemble the ISO-TP answer (single frame, or first frame + consecutive frames).
+void EsparCanComponent::handle_diag_frame_(const twai_message_t &msg) {
+  if (!diag_waiting_) return;  // late or unsolicited — e.g. another tester on the bus
+
+  const uint8_t *b   = msg.data;
+  uint8_t        dlc = msg.data_length_code;
+
+  switch (b[0] >> 4) {
+    case 0x0: {  // single frame
+      uint8_t len = b[0] & 0x0F;
+      if (len == 0 || len > dlc - 1) return;
+      diag_process_response_(b + 1, len);
+      break;
+    }
+
+    case 0x1: {  // first frame — ask for the rest
+      diag_expected_ = (static_cast<uint16_t>(b[0] & 0x0F) << 8) | b[1];
+      if (diag_expected_ > DIAG_BUF_SIZE || dlc < 8) {
+        ESP_LOGW(TAG, "Diagnostics: answer to %04X too long (%u bytes)", DIAG_DIDS[diag_pending_], diag_expected_);
+        diag_waiting_ = false;
+        t_diag_done_  = millis();
+        return;
+      }
+      diag_len_ = 6;
+      for (int i = 0; i < 6; i++) diag_buf_[i] = b[2 + i];
+      diag_next_seq_ = 1;
+      // Flow control: send all remaining frames, 20 ms apart
+      const uint8_t fc[8] = {0x30, 0x00, 0x14, DIAG_PAD, DIAG_PAD, DIAG_PAD, DIAG_PAD, DIAG_PAD};
+      send_frame_(DIAG_REQUEST_ID, fc, 8);
+      break;
+    }
+
+    case 0x2: {  // consecutive frame
+      if (diag_expected_ == 0 || (b[0] & 0x0F) != diag_next_seq_) return;
+      diag_next_seq_ = (diag_next_seq_ + 1) & 0x0F;
+      for (int i = 1; i < dlc && diag_len_ < diag_expected_; i++) diag_buf_[diag_len_++] = b[i];
+      if (diag_len_ >= diag_expected_) diag_process_response_(diag_buf_, diag_expected_);
+      break;
+    }
+
+    default:
+      break;
+  }
+}
+
+// data = UDS payload: [62][DID hi][DID lo][values...]  or  [59][02][mask][DTCs...]  or  [7F][SID][NRC]
+// Bytes after the length announced by ISO-TP are leftovers from the heater's buffer.
+void EsparCanComponent::diag_process_response_(const uint8_t *data, uint16_t len) {
+  uint16_t did = DIAG_DIDS[diag_pending_];
+  uint8_t  sid = (diag_pending_ == DIAG_FAULT_MEMORY) ? UDS_READ_DTC : UDS_READ_DATA;
+
+  if (len >= 3 && data[0] == 0x7F && data[1] == sid) {
+    if (data[2] == 0x78) return;  // response pending — keep waiting
+    ESP_LOGW(TAG, "Diagnostics: heater rejects %02X %04X (NRC 0x%02X) — not asking again", sid, did, data[2]);
+    diag_unsupported_ |= (1u << diag_pending_);
+    diag_waiting_  = false;
+    diag_timeouts_ = 0;
+    t_diag_done_   = millis();
+    return;
+  }
+
+  // Positive answer = service id + 0x40. A DTC answer echoes the sub-function,
+  // then the heater's status availability mask, so only byte 1 is comparable.
+  if (len < 3 || data[0] != (sid | 0x40) || data[1] != (did >> 8)) return;
+  if (sid == UDS_READ_DATA && (len < 4 || data[2] != (did & 0xFF))) return;
+
+  diag_waiting_  = false;
+  diag_timeouts_ = 0;
+  t_diag_done_   = millis();
+
+  const uint8_t *v = data + 3;
+  uint16_t       n = len - 3;
+  auto u16be = [v](uint16_t i) -> uint16_t { return (static_cast<uint16_t>(v[i]) << 8) | v[i + 1]; };
+  auto u32be = [v](uint16_t i) -> uint32_t {
+    return (static_cast<uint32_t>(v[i]) << 24) | (static_cast<uint32_t>(v[i + 1]) << 16) |
+           (static_cast<uint32_t>(v[i + 2]) << 8) | v[i + 3];
+  };
+
+  switch (diag_pending_) {
+    case DIAG_FLAME:
+      // Byte 0: 00 = no flame, 01 = flame (~70 s after the heat command, off 4 s after stop).
+      if (flame_detected_sensor_) flame_detected_sensor_->publish_state(v[0] != 0);
+      // Byte 1: 01 = no fuel, 02 = fuel pump running (ignition and burning on the Airtronic;
+      // the Hydronic S3 also reports 03 while burning).
+      if (combustion_state_sensor_ && n >= 2) {
+        const char *state = (v[1] == 0x01) ? "No fuel" : (v[1] == 0x02) ? "Fuel on" :
+                            (v[1] == 0x03) ? "Burning" : nullptr;
+        if (state) {
+          combustion_state_sensor_->publish_state(state);
+        } else {
+          char buf[8];
+          snprintf(buf, sizeof(buf), "0x%02X", v[1]);
+          combustion_state_sensor_->publish_state(buf);
+        }
+      }
+      break;
+
+    case DIAG_TEMPERATURES:
+      // uint16 words, °C = v/100 − 50, FFFF = not fitted.
+      // Word 1 = flame sensor, word 2 = intake air.
+      if (n >= 2 && flame_temperature_sensor_) {
+        uint16_t raw = u16be(0);
+        flame_temperature_sensor_->publish_state(raw == 0xFFFF ? NAN : raw / 100.0f - 50.0f);
+      }
+      if (n >= 4 && intake_temperature_sensor_) {
+        uint16_t raw = u16be(2);
+        intake_temperature_sensor_->publish_state(raw == 0xFFFF ? NAN : raw / 100.0f - 50.0f);
+      }
+      break;
+
+    case DIAG_VOLTAGE:
+      if (n >= 2 && supply_voltage_sensor_) supply_voltage_sensor_->publish_state(u16be(0) / 10.0f);
+      break;
+
+    case DIAG_FUEL_PUMP:
+      // × 0.1 Hz: 1.4 Hz at ignition, 3–4 Hz while burning
+      if (fuel_pump_frequency_sensor_) fuel_pump_frequency_sensor_->publish_state(v[0] / 10.0f);
+      break;
+
+    case DIAG_GLOW_PLUG:
+      // uint16, likely 0.1 W (unit as on the Hydronic S3): 0 = off, ~105–116 W during ignition
+      if (n >= 2 && glow_plug_sensor_) glow_plug_sensor_->publish_state(u16be(0) != 0);
+      if (n >= 2 && glow_plug_power_sensor_) glow_plug_power_sensor_->publish_state(u16be(0) / 10.0f);
+      break;
+
+    case DIAG_PHASE: {
+      // Bytes 2–4 (while starting) or 5–7 (in cooldown): step number and the
+      // seconds spent in it × 100. Both groups are zero while burning steadily.
+      if (n >= 8) {
+        bool in_cooldown = v[5] != 0 || v[6] != 0 || v[7] != 0;
+        if (phase_step_sensor_) phase_step_sensor_->publish_state(in_cooldown ? v[5] : v[2]);
+        if (phase_time_sensor_) phase_time_sensor_->publish_state(u16be(in_cooldown ? 6 : 3) / 100.0f);
+      }
+      // Byte 1 = phase. 0x14, 0x1E and 0x28 match the Hydronic S3; the start-up and
+      // ignition steps are named after what the other values did while they were active.
+      if (n < 2 || !combustion_phase_sensor_) break;
+      const char *name =
+        (v[1] == 0x00) ? "Off" :
+        (v[1] == 0x04 || v[1] == 0x0F || v[1] == 0x10) ? "Startup" :  // ~5 s each, before the glow plug
+        (v[1] == 0x07) ? "Pre-glow" :       // glow plug on, fuel pump still off
+        (v[1] == 0x08) ? "Ignition" :       // fuel pump starts
+        (v[1] == 0x09) ? "Flame ramp-up" :  // flame detected, glow plug turns off
+        (v[1] == 0x14) ? "Burning" :
+        (v[1] == 0x1E) ? "Cooldown" :
+        (v[1] == 0x28) ? "Control pause" :  // heat requested, setpoint reached: no flame (0x2C4 still says HEATING)
+        (v[1] == 0xD2) ? "Ventilation" : nullptr;
+      if (name) {
+        combustion_phase_sensor_->publish_state(name);
+      } else {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "0x%02X", v[1]);
+        combustion_phase_sensor_->publish_state(buf);
+      }
+      break;
+    }
+
+    case DIAG_BLOWER:
+      // uint16 with an offset of 20000, unit unknown: 0 = stopped, ~1100 fan only, up to ~4560 heating
+      if (n >= 2 && blower_level_sensor_) {
+        uint16_t raw = u16be(0);
+        blower_level_sensor_->publish_state(raw > BLOWER_LEVEL_OFFSET ? raw - BLOWER_LEVEL_OFFSET : 0);
+      }
+      break;
+
+    case DIAG_FUEL:
+      // Byte 1 = fuel rate in µl/s (72 at 4.0 Hz = 0.26 l/h, the B2L's rated maximum).
+      // Bytes 2–5 = total fuel in whole litres, bytes 6–9 = nanolitres of the current litre.
+      if (fuel_rate_sensor_ && n >= 2) fuel_rate_sensor_->publish_state(v[1] * 3.6f / 1000.0f);
+      if (fuel_total_sensor_ && n >= 10) fuel_total_sensor_->publish_state(u32be(2) + u32be(6) / 1.0e9f);
+      break;
+
+    case DIAG_POWER_DEMAND:
+      // uint16 × 0.01 %: 0 outside steady burning, 10000 at full power
+      if (n >= 2 && power_demand_sensor_) power_demand_sensor_->publish_state(u16be(0) / 100.0f);
+      break;
+
+    case DIAG_BURN_TIME:
+      // uint16 × 0.01 s since the flame was detected; keeps its last value after the stop
+      if (n >= 2 && burn_time_sensor_) burn_time_sensor_->publish_state(u16be(0) / 100.0f);
+      break;
+
+    case DIAG_REGULATION:
+      // Two uint16, both (°C + 50) × 10: the setpoint the heater works with (500 = none)
+      // and the temperature it regulates on (the same value as 0x2C4 D5/D6).
+      if (n >= 4) {
+        uint16_t set = u16be(0);
+        if (heater_setpoint_sensor_) heater_setpoint_sensor_->publish_state(set == 500 ? NAN : set / 10.0f - 50.0f);
+        if (heater_temperature_sensor_) heater_temperature_sensor_->publish_state(u16be(2) / 10.0f - 50.0f);
+      }
+      break;
+
+    case DIAG_ECU_TEMP:
+      // Same scaling as FD01. Likely the control unit's temperature (unconfirmed).
+      if (n >= 2 && control_unit_temperature_sensor_)
+        control_unit_temperature_sensor_->publish_state(u16be(0) / 100.0f - 50.0f);
+      break;
+
+    case DIAG_PRESSURE:
+      // uint16 × 0.1 hPa. Likely the sensor used for altitude compensation (unconfirmed).
+      if (n >= 2 && air_pressure_sensor_) air_pressure_sensor_->publish_state(u16be(0) / 10.0f);
+      break;
+
+    case DIAG_COUNTERS:
+      // Seven uint32, all in minutes. Word 1 counts while the heater is running (fan,
+      // heating, cooldown). Words 2–7: time at 0–25 / 25–50 / 50–75 / 75–100 % power,
+      // in control pause and in altitude mode.
+      if (n >= 4) {
+        if (operating_hours_sensor_) operating_hours_sensor_->publish_state(u32be(0) / 60.0f);
+        for (uint8_t band = 0; band < 6; band++) {
+          if (band_hours_sensor_[band] && n >= 8 + band * 4)
+            band_hours_sensor_[band]->publish_state(u32be(4 + band * 4) / 60.0f);
+        }
+        diag_hours_read_   = true;
+        t_diag_hours_last_ = millis();
+      }
+      break;
+
+    case DIAG_STARTS:
+      // uint16, +1 at every start and every burner stop
+      if (n >= 2 && start_stop_count_sensor_) start_stop_count_sensor_->publish_state(u16be(0));
+      break;
+
+    case DIAG_PUMP_STROKES:
+      // uint32, lifetime fuel pump strokes (~18 µl each on the B2L)
+      if (n >= 4 && fuel_pump_strokes_sensor_) fuel_pump_strokes_sensor_->publish_state(u32be(0));
+      break;
+
+    case DIAG_SW_VERSION:
+      if (software_version_sensor_) {
+        software_version_sensor_->publish_state(std::string(reinterpret_cast<const char *>(v), n));
+        diag_read_once_ |= (1u << diag_pending_);
+      }
+      break;
+
+    case DIAG_HW_VERSION:
+      if (hardware_version_sensor_) {
+        hardware_version_sensor_->publish_state(std::string(reinterpret_cast<const char *>(v), n));
+        diag_read_once_ |= (1u << diag_pending_);
+      }
+      break;
+
+    case DIAG_PART_NUMBER:
+      // Six BCD bytes (20 20 29 01 50 01 → 20.2029.01.5001) and a two-character index
+      if (n >= 6 && part_number_sensor_) {
+        char buf[24];
+        int pos = snprintf(buf, sizeof(buf), "%02X.%02X%02X.%02X.%02X%02X", v[0], v[1], v[2], v[3], v[4], v[5]);
+        if (n >= 8) snprintf(buf + pos, sizeof(buf) - pos, " %c%c", v[6], v[7]);
+        part_number_sensor_->publish_state(buf);
+        diag_read_once_ |= (1u << diag_pending_);
+      }
+      break;
+
+    case DIAG_FAULT_MEMORY: {
+      // 4 bytes per entry: 3 bytes code (00 01 15 → P000115), 1 byte status (bit0 = active now)
+      diag_fault_read_requested_ = false;
+      if (!fault_memory_sensor_) break;
+      std::string list;
+      for (uint16_t i = 0; i + 4 <= n; i += 4) {
+        char buf[20];
+        snprintf(buf, sizeof(buf), "P%02X%02X%02X%s", v[i], v[i + 1], v[i + 2], (v[i + 3] & 0x01) ? " (active)" : "");
+        if (!list.empty()) list += ", ";
+        list += buf;
+      }
+      ESP_LOGI(TAG, "Fault memory: %s", list.empty() ? "empty" : list.c_str());
+      fault_memory_sensor_->publish_state(list.empty() ? "None" : list);
+      break;
+    }
+
+    default:
+      break;
   }
 }
 
@@ -933,6 +1326,19 @@ void EsparCanComponent::dump_config() {
   LOG_BINARY_SENSOR("  ",  "Status Flag 0x20", flag_0x20_sensor_);
   LOG_BINARY_SENSOR("  ",  "Heater Connected", connected_sensor_);
   LOG_TEXT_SENSOR("  ",    "Fault",            fault_sensor_);
+  if (diag_enabled_) {
+    ESP_LOGCONFIG(TAG, "  Diagnostics (UDS 0x%03lX → 0x%03lX, read-only): every %lus while active, %lus while idle",
+                  (unsigned long) DIAG_REQUEST_ID, (unsigned long) DIAG_RESPONSE_ID,
+                  (unsigned long)(diag_interval_ms_ / 1000), (unsigned long)(DIAG_IDLE_INTERVAL_MS / 1000));
+    LOG_BINARY_SENSOR("  ", "Flame Detected",      flame_detected_sensor_);
+    LOG_TEXT_SENSOR("  ",   "Combustion Phase",    combustion_phase_sensor_);
+    LOG_SENSOR("  ",        "Flame Temperature",   flame_temperature_sensor_);
+    LOG_SENSOR("  ",        "Supply Voltage",      supply_voltage_sensor_);
+    LOG_SENSOR("  ",        "Fuel Pump Frequency", fuel_pump_frequency_sensor_);
+    LOG_TEXT_SENSOR("  ",   "Fault Memory",        fault_memory_sensor_);
+  } else {
+    ESP_LOGCONFIG(TAG, "  Diagnostics: off");
+  }
 }
 
 }  // namespace espar_can

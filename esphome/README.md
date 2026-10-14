@@ -168,6 +168,11 @@ espar_can:
     name: "Espar Connected"
   fault_text:                           # optional text sensor: "OK" or fault description
     name: "Espar Fault"
+
+  diagnostics:                          # optional, read-only heater diagnostics — off unless present
+    update_interval: 10s                # see "Heater diagnostics" below
+    flame_detected:
+      name: "Espar Flame"
 ```
 
 ---
@@ -185,6 +190,75 @@ If another controller (e.g. a real EasyStart Pro) appears on the bus while the W
 The WeAct currently *emulates the EasyStart Pro*: it sends the same CAN IDs (0x54–0x57, 0x60D, 0x65). With a real Pro also transmitting, this has been seen to trigger fault **P000342** ("invalid configuration — check ADR coding"). ADR there is Eberspächer's dangerous-goods mode for hazardous-cargo vehicles, not a bus address (thanks to Greg for spotting it); why the two controllers trigger it is unknown. How a second control element identifies itself is unknown ([#15](https://github.com/TrooperDuper/espar-airtronic-esphome/issues/15)). Until then, turn on CAN Standby whenever a real Pro is on the bus.
 
 The `Espar CAN Standby` switch (defined in `espar-heater.yaml`) suspends all outbound frames from the WeAct without physically unplugging anything. Turning it ON from HA before connecting an OEM tool prevents the conflict. Turning it OFF afterwards automatically re-runs the CAN handshake.
+
+---
+
+## Heater diagnostics (optional, read-only)
+
+The heater answers diagnostic requests on the CAN bus (UDS on 0x7A0 → 0x73C, the channel EasyScan and the EasyStart Pro's workshop menu use). With a `diagnostics:` block the component asks for values the cyclic frames don't carry: real flame detection, flame sensor temperature, supply voltage, fuel pump, glow plug, combustion phase, fuel used, the heater's own operating hours and its fault memory with P-codes.
+
+- **Off by default.** Without a `diagnostics:` block nothing is ever requested.
+- **Read-only.** Only ReadDataByIdentifier (`22`) and ReadDTCInformation (`19 02 08`). Nothing is written, reset or cleared.
+- **Quiet.** One request at a time, 50 ms apart. A sweep only asks for what the configured entities need, every `update_interval` (default 10 s) while the heater is starting, running or cooling down, once a minute while it idles. Versions and part number are read once.
+- **Nothing in CAN Standby** and nothing while the heater isn't connected.
+- The fault memory is read on connect, when the heater reports a fault, and after each run. To read it on demand: `- lambda: id(espar).read_fault_memory();`
+- An identifier the heater rejects is not asked again.
+
+Tested on an Airtronic S3 B2L (gasoline, software 02.03.11) in idle, fan, heating and cooldown. Identifiers, scalings and what is confirmed: [docs/uds-diagnostics.md](../docs/uds-diagnostics.md).
+
+```yaml
+espar_can:
+  # ...
+  diagnostics:
+    update_interval: 10s                # while active; min 2s. Idle: once a minute
+    flame_detected:                     # binary: the heater's own flame detection (FD0F)
+      name: "Espar Flame"
+    combustion_phase:                   # text: Off / Startup / Pre-glow / Ignition / Flame ramp-up /
+      name: "Espar Phase"               #       Burning / Control pause / Cooldown / Ventilation
+    flame_temperature:                  # °C, flame sensor
+      name: "Espar Flame Temperature"
+    supply_voltage:                     # V
+      name: "Espar Supply Voltage"
+    fuel_pump_frequency:                # Hz
+      name: "Espar Fuel Pump"
+    fuel_rate:                          # l/h, 0 without flame
+      name: "Espar Fuel Rate"
+    fuel_total:                         # l, lifetime as the heater counts it
+      name: "Espar Fuel Total"
+    operating_hours:                    # h, the heater's own counter
+      name: "Espar Operating Hours"
+    fault_memory:                       # text: "P000115, P000129 (active)" or "None"
+      name: "Espar Fault Memory"
+```
+
+All diagnostic entities (each optional):
+
+| Key | Type | Source | Description |
+|---|---|---|---|
+| `flame_detected` | Binary sensor | FD0F | Flame detected by the heater (~70 s after the heat command) |
+| `combustion_state` | Text sensor | FD0F | `No fuel` / `Fuel on` |
+| `combustion_phase` | Text sensor | FD10 | Phase name, or the raw code (`0x..`) if unknown |
+| `phase_step`, `phase_time` | Sensor | FD10 | Step within the start-up or cooldown sequence, seconds in it |
+| `flame_temperature` | Sensor (°C) | FD01 | Flame sensor |
+| `intake_temperature` | Sensor (°C) | FD01 | Intake air sensor |
+| `heater_setpoint`, `heater_temperature` | Sensor (°C) | FD45 | Setpoint and temperature the heater itself is regulating on |
+| `power_demand` | Sensor (%) | FD0E | Power demand while burning |
+| `burn_time` | Sensor (s) | FD2A | Burn time of the current run |
+| `supply_voltage` | Sensor (V) | FD04 | Supply voltage at the heater |
+| `fuel_pump_frequency` | Sensor (Hz) | FD0D | Fuel metering pump |
+| `glow_plug`, `glow_plug_power` | Binary sensor, sensor (W) | FD0A | Glow plug on / power (unit as on the Hydronic S3) |
+| `blower_level` | Sensor | FD08 | Blower drive value, 0 = stopped (unit unknown) |
+| `fuel_rate`, `fuel_total` | Sensor (l/h, l) | FD11 | Fuel rate; lifetime fuel |
+| `fuel_pump_strokes` | Sensor | FD6A | Lifetime fuel pump strokes |
+| `start_stop_count` | Sensor | FD06 | +1 at every start and every burner stop |
+| `operating_hours` | Sensor (h) | FD17 | Operating time (fan, heating, cooldown) |
+| `hours_power_0_25` … `hours_power_75_100`, `hours_control_pause`, `hours_altitude_mode` | Sensor (h) | FD17 | Time per power band, in control pause and in altitude mode |
+| `control_unit_temperature` | Sensor (°C) | FD35 | Likely the control unit's temperature (unconfirmed) |
+| `air_pressure` | Sensor (hPa) | FD36 | Likely the altitude-compensation sensor (unconfirmed) |
+| `software_version`, `hardware_version`, `part_number` | Text sensor | F195, F193, F1F0 | Read once |
+| `fault_memory` | Text sensor | `19 02 08` | Stored P-codes, `(active)` if active now; `None` if empty. Meanings: [docs/fault-codes.md](../docs/fault-codes.md) |
+
+> **Heads-up:** during the heater's own control pause (phase `Control pause`, FD10 = `0x28`) the 0x2C4 state still says HEATING. *Espar Heating* and *Espar Heater State* stay on although nothing burns; `flame_detected` and `combustion_phase` show what's really happening.
 
 ---
 
