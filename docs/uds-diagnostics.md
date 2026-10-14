@@ -1,5 +1,8 @@
 # Diagnostics over CAN (UDS) — Airtronic S3
 
+> [!IMPORTANT]
+> **Independent research — not Eberspächer.** This project and this document are not affiliated with, endorsed by, or supported by Eberspächer Group, Espar Products Inc., or any related entity. Product names (Airtronic, Hydronic, EasyStart, EasyScan) are used only to identify the hardware. Nothing here is official documentation. All values were observed on a single heater and may be wrong or differ on yours. Only read requests were sent; nothing was written, reset or cleared. Use at your own risk — see the warning in the [README](../README.md).
+
 **Status:** measured on one Airtronic S3 B2L (gasoline, 12 V, software `02.03.11`, hardware `03.01.03`) on 2026-10-13/14, in idle, fan, heating and cooldown. Reading had no effect on operation and left no entry in the fault memory.
 
 **Credit:** the diagnostic addresses, the framing and most identifiers were first found and documented by [@farnham26](https://github.com/farnham26) for the Hydronic S3 in [esphome-s3-hydronic-cs](https://github.com/farnham26/esphome-s3-hydronic-cs) (`docs/research.md`). Everything below was re-measured on the Airtronic. Only facts (addresses, identifiers, scalings) were taken over from that project, no code. Where a meaning comes from the Hydronic work and was not checked here, the *Status* column says so.

@@ -1,5 +1,8 @@
 # Experiment — let the heater regulate itself
 
+> [!IMPORTANT]
+> **Independent research — not Eberspächer.** Not affiliated with, endorsed by, or supported by Eberspächer Group, Espar Products Inc., or any related entity. Product names are used only to identify the hardware; this is not official documentation. This experiment sends control frames to a combustion heater and was tried on a single unit. Use at your own risk — see the warning in the [README](../../README.md).
+
 **Status:** works on one Airtronic S3 B2L (rhd944dot1). First tested 2026-10-14 00:05–00:15 with diagnostics logged (numbers below), then several more runs on 2026-10-14 without detailed logs, which behaved like the heater does with the OEM EasyStart Pro. Implemented on a local branch, not in this repo yet. Related: [#9](https://github.com/TrooperDuper/espar-airtronic-esphome/issues/9).
 
 ## Question
