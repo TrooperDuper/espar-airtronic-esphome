@@ -7,6 +7,7 @@
 #include "espar_can.h"
 #include "esphome/core/log.h"
 #include "esphome/core/hal.h"
+#include <cstring>
 #include <cmath>
 #include <string>
 
@@ -168,7 +169,7 @@ climate::ClimateTraits EsparCanComponent::traits() {
       climate::CLIMATE_MODE_HEAT,
       climate::CLIMATE_MODE_FAN_ONLY,
   });
-  traits.set_visual_min_temperature(15.0f);   // 59°F
+  traits.set_visual_min_temperature(10.0f);   // 50°F — heater's own setpoint floor (Airtronic 3 TD §4.4)
   traits.set_visual_max_temperature(30.0f);   // 86°F
   traits.set_visual_temperature_step(0.5f);
   return traits;
@@ -354,9 +355,22 @@ void EsparCanComponent::handle_rx_() {
     ESP_LOGW(TAG, "CAN error-passive — bus error count: %lu", (unsigned long)st.bus_error_count);
   }
   if (alerts & TWAI_ALERT_BUS_ERROR) {
-    twai_status_info_t st;
-    twai_get_status_info(&st);
-    ESP_LOGW(TAG, "CAN bus error — count: %lu", (unsigned long)st.bus_error_count);
+    // Rate-limited: with the heater unpowered nothing ACKs our frames and the
+    // controller retries endlessly (thousands of errors/s). Logging each one
+    // stalls the main loop, so emit one summary per BUS_ERR_LOG_MS instead.
+    static constexpr uint32_t BUS_ERR_LOG_MS = 5000;
+    uint32_t now = millis();
+    if (bus_err_log_ms_ == 0 || (now - bus_err_log_ms_) >= BUS_ERR_LOG_MS) {
+      twai_status_info_t st;
+      twai_get_status_info(&st);
+      uint32_t delta = st.bus_error_count - bus_err_logged_count_;
+      ESP_LOGW(TAG, "CAN bus errors: +%lu in last %lus (total %lu)%s",
+               (unsigned long) delta, (unsigned long)(BUS_ERR_LOG_MS / 1000),
+               (unsigned long) st.bus_error_count,
+               heater_connected_ ? "" : " — heater not responding (unpowered?)");
+      bus_err_logged_count_ = st.bus_error_count;
+      bus_err_log_ms_ = now;
+    }
   }
   if (alerts & TWAI_ALERT_BUS_OFF) {
     // TWAI entered bus-off after 256 un-ACKed TX errors.
@@ -584,6 +598,10 @@ void EsparCanComponent::parse_0x2C4_(const twai_message_t &msg) {
 
     ESP_LOGI(TAG, "Heater state: %s | Burning: %s | Flag0x20: %s | Echo: %u",
       state_str, new_flame ? "ON" : "off", new_flag_0x20 ? "set" : "clear", new_ctr);
+    if (strcmp(state_str, "UNKNOWN") == 0) {
+      ESP_LOGW(TAG, "Unmapped 0x2C4 state — raw D1-D4: %02X %02X %02X %02X",
+               msg.data[0], msg.data[1], msg.data[2], msg.data[3]);
+    }
 
     if (heater_state_sensor_) heater_state_sensor_->publish_state(state_str);
     if (flame_sensor_)         flame_sensor_->publish_state(new_flame);

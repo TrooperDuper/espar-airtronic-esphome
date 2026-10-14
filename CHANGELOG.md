@@ -12,6 +12,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **COOLDOWN heater state:** D1=IDLE with D2 bit 3 and no fault code = after-run blower. *Espar Heater State* shows `COOLDOWN` and the climate action shows *Fan* until it's truly idle. The example YAML adds a dim-orange LED colour.
 - **Anti-short-cycle options (#9):** `hysteresis`, `min_run_time`, `min_off_time`, `max_starts_per_hour`. All off by default. They gate only thermostat-driven starts and stops; HA mode/setpoint changes and faults act immediately. The thermostat is re-evaluated every 5 s so timers expire on their own.
 - **Other controller on the bus:** another controller's 0x60D or 0x54–0x57 frames while the WeAct is transmitting set *Espar Fault* = `OTHER CONTROLLER ON BUS — enable CAN Standby` (cleared when it disappears or Standby is turned on). 0x60D, 0x65 and the init-burst IDs are now treated like 0x54–0x57: logged at debug, not raised as unknown-ID faults.
+- An unmapped 0x2C4 state (shown as `UNKNOWN`) now logs its raw D1–D4 bytes at WARN, so it can be identified.
+
+### Changed (after #14)
+- CAN bus errors are logged as one summary every 5 s instead of one line per error. With the heater unpowered nothing ACKs the WeAct's frames and the error count climbs by thousands per second, which previously stalled the main loop.
+- Climate entity minimum setpoint lowered from 15 °C (59 °F) to 10 °C (50 °F), matching the heater's own setpoint range (Airtronic 3 Technical Description §4.4). Override with the standard `visual:` block if needed.
 
 ### Fixed
 - **Heater ignored commands after a power interruption while reporting OK** ([#14](https://github.com/TrooperDuper/espar-airtronic-esphome/issues/14)). The heater often comes back in IDLE with D3 = `0x04` and ignores HEAT/FAN until 0x54 goes FAN → IDLE. The component now reports it (*Espar Fault* = `IDLE LOCK: …`) and releases it automatically (`auto_clear_idle_lock`, default on: 45 s wait, FAN 6 s, IDLE 5 s, up to 3 tries). Verified 2/2 on hardware.

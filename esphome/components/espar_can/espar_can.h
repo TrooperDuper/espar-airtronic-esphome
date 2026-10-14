@@ -255,6 +255,9 @@ class EsparCanComponent : public climate::Climate, public Component {
   uint32_t t_cmd_last_{0};
   uint32_t t_status_last_{0};
   uint32_t t_init_last_{0};
+  // Bus-error log rate limit (one summary per BUS_ERR_LOG_MS)
+  uint32_t bus_err_log_ms_{0};
+  uint32_t bus_err_logged_count_{0};
   bool     init_done_{false};
 
   // ── 0x65 burst sequencing ─────────────────────────────────────────────
