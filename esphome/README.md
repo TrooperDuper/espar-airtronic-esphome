@@ -180,7 +180,7 @@ If the heater's supply is interrupted (battery disconnect, low-voltage cutoff, p
 
 ## OEM diagnostics — CAN standby mode
 
-If another controller (e.g. a real EasyStart Pro) appears on the bus while the WeAct is transmitting, the component sees its 0x60D heartbeat and sets *Espar Fault* = `OTHER CONTROLLER ON BUS — enable CAN Standby`. Its frames (0x54–0x57, 0x60D, 0x65 and the init burst) are logged at debug level, not raised as unknown-ID faults.
+If another controller (e.g. a real EasyStart Pro) appears on the bus while the WeAct is transmitting, the component sees its 0x60D or 0x54–0x57 frames and sets *Espar Fault* = `OTHER CONTROLLER ON BUS — enable CAN Standby`. Its frames (0x54–0x57, 0x60D, 0x65 and the init burst) are logged at debug level, not raised as unknown-ID faults.
 
 Eberspächer supports multiple control elements on the CAN bus — each gets its own address via ADR coding (an EasyStart Pro and EasyStart Remote+ can run together). The WeAct currently *emulates the EasyStart Pro*, so running it alongside a real EasyStart Pro puts two devices with the same identity on the bus — an invalid configuration that can trigger fault **P000342** ("invalid configuration — check ADR coding"). This is an addressing collision, not a controller-count limit.
 
