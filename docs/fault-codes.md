@@ -8,7 +8,7 @@ The ESPHome component detects faults two ways:
 
 2. **Behavioral detection (implemented):** Patterns from 0x2C4 and 0x625 — failed starts, heartbeat loss, startup timeout, lockout.
 
-The Eberspächer EasyScan diagnostic tool communicates via a separate CAN request/response protocol. The frame IDs and payload structure for that protocol have not yet been captured. The 6 remaining D3 bit positions (bits 0–4, bit 7) are also unconfirmed — each likely maps to a different fault category.
+The Eberspächer EasyScan diagnostic tool communicates via a separate CAN request/response protocol: UDS on 0x7A0 → 0x73C. Reading the fault memory with P-codes over it is confirmed on an Airtronic S3 B2L — see [uds-diagnostics.md](uds-diagnostics.md#fault-memory). The 6 remaining D3 bit positions (bits 0–4, bit 7) are also unconfirmed — each likely maps to a different fault category.
 
 This document covers:
 1. What the component currently detects and how
@@ -87,7 +87,9 @@ See `ESPAR_CAN_Fault_Analysis.md` for the full capture methodology and frame-by-
 
 ---
 
-## Phase 3 — EasyScan protocol RE (not yet started)
+## Phase 3 — EasyScan protocol RE
+
+> **Update 2026-10-14:** the protocol is UDS on 0x7A0 → 0x73C, found on the Hydronic S3 by [@farnham26](https://github.com/farnham26/esphome-s3-hydronic-cs) and confirmed on the Airtronic S3 B2L. The fault memory (`19 02 08`) returns the stored P-codes with a status byte. Details: [uds-diagnostics.md](uds-diagnostics.md). The capture plan below is kept for reference.
 
 ### What the manual tells us
 

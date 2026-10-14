@@ -24,6 +24,8 @@
 | 0x60D | Controller → Heater | ~100ms | Controller alive heartbeat |
 | 0x65  | Controller → Heater | ~10s   | Periodic status burst |
 | 0x5C–0x10A | Controller → Heater | Once | Init burst at startup |
+| 0x7A0 | Tester → Heater | On request | UDS diagnostic request (ISO-TP), see [uds-diagnostics.md](uds-diagnostics.md) |
+| 0x73C | Heater → Tester | On request | UDS diagnostic response (ISO-TP) |
 
 ---
 
@@ -41,7 +43,7 @@
 | D2 bit 5 | Flag 0x20 (meaning unconfirmed) | Set ~45 s into each burn on one B2L (~2,100 m); never set on another B2L near sea level, even under the OEM controller. Leading theory: altitude compensation active. **Not a reliable flame signal** — the component uses D1=`0x09` (HEATING) for "flame". |
 | D2 | Fault flag | `0x08` when D1=0x0B (fault active) |
 | D3 | Fault code | Non-zero during fault and for ~26s post-fault in IDLE. See fault code table below. |
-| D5–D6 | Temperature echo (previously "counter") | 16-bit LE, raw ≈ 600–700. Likely a temperature: the OEM controller sends its own value (matches its 0x65 frame, probably its room sensor); the heater mirrors the controller's value while heating and reports its own value when idle or in fault. Semantics unconfirmed. |
+| D5–D6 | Temperature (previously "echo" / "counter") | 16-bit LE, **(°C + 50) × 10** (650 = 15.0 °C). While heating: the room temperature the controller sends in 0x54 D5/D6, which the heater regulates on. When idle or in fault: the heater's own value = its intake air sensor minus 3.0 K. Unit confirmed via UDS `FD45`, see [uds-diagnostics.md](uds-diagnostics.md). |
 
 **Heater state codes (D1):**
 
@@ -157,7 +159,7 @@ payload = [0x01, 0x05, D3, D4, ctr_lo, ctr_hi, 0x00, 0x00]
 
 > **Encoding confidence: VERY HIGH.** The 78°F case (D4=`0x01`) definitively proves the temperature is a 16-bit little-endian uint16 in 0.1°C units — not a single byte.
 
-**Temperature echo (D5/D6, previously documented as a "counter"):** 16-bit LE, raw ≈ 600–700, drifts slowly. A capture with the OEM EasyStart Pro shows the controller sends its own value here (the same value as its 0x65 frame — most likely its room-temperature sensor). While heating, the heater mirrors it in 0x2C4 D5/D6. This component echoes the heater's own value back, which works with the fixed-setpoint approach. Use `FE FF` (SAE J1939 "Not Available") for idle/fan modes as before.
+**Room temperature (D5/D6, previously documented as "temperature echo" / "counter"):** 16-bit LE, **(°C + 50) × 10**. The OEM EasyStart Pro sends its own room-temperature sensor here (the same value as in its 0x65 frame); the heater regulates on it and mirrors it in 0x2C4 D5/D6. The unit is confirmed via UDS: `FD45` returns the setpoint and the regulating temperature in this unit, and the second value is exactly what was sent here. This component currently echoes the heater's own value back, which works with its own on/off thermostat. Sending a real room value instead lets the heater modulate and pause by itself like with the Pro — see [experiments/heater-regulation.md](experiments/heater-regulation.md). Don't send `FE FF` here while heating with 0x63 D2 = `00`: the heater then regulates on 0.0 °C. Use `FE FF` (SAE J1939 "Not Available") for idle/fan modes as before.
 
 **Duration note:** Duration (30min, 60min, etc.) is **not encoded in any CAN message**. The heater runs until commanded OFF. Implement auto-off timers in your controller or HA automations.
 
@@ -229,6 +231,26 @@ Send once at startup in this order, then repeat every 150ms until the heater's 0
 | 0x6A | `BE 3E 27 00 01 1E 00 00` |
 | 0x6B | `BE 3E 27 00 01 1E 00 00` |
 | 0x6C | `BE 3E 27 00 01 1E 00 00` |
+
+**What the fields mean.** The init burst carries the controller's **settings, not an address**. The layout was decoded on a Hydronic S3 by [@farnham26](https://github.com/farnham26/esphome-s3-hydronic-cs) (`docs/research.md`); the EasyStart Pro sends the same frames to the Airtronic. Only the 0x63 sensor selection has been exercised on the Airtronic so far (see [experiments/heater-regulation.md](experiments/heater-regulation.md)).
+
+| ID | Field | Meaning (Hydronic research) |
+|---|---|---|
+| 0x5C / 0x5F | D1–D2 | Preset run time in minutes for heater 1 / 2 (`1E` = 30 min) |
+| 0x62 / 0x6D | — | Heater 1 / heater 2 entries. D8 differs between EasyStart Pros (`F1` / `F2`) and isn't checked |
+| 0x63 | D1 | Temperature offset, (raw − 50) / 10 °C (`32` = 0.0) |
+| 0x63 | D2 | Sensor selection: `01` = sensor in the control unit, `00` = none |
+| 0x63 | D4 | Change counter |
+| 0x64 | D7–D8 | Service interval in 10 h, `FF 03` = off |
+| 0x67–0x69 | D1 | `BE` (constant) |
+| 0x67–0x69 | D2 | Timer 1–3 weekdays, one bit per day: bit 1 = Mon … bit 5 = Fri, bit 6 = Sat, bit 7 = Sun (`3E` = Mon–Fri) |
+| 0x67–0x69 | D3–D4 | Start time: hour in the low 5 bits of D3, minute in D4 (`27 00` = 07:00) |
+| 0x67–0x69 | D5 | Mode: `01` heat, `02` fan |
+| 0x67–0x69 | D6 | Duration in minutes in the low 7 bits, bit 7 = timer active (`1E` = 30 min, inactive) |
+| 0x6A–0x6C | | Timers for heater 2 |
+| 0x10A | D1–D4 | Clock: weekday in the low 3 bits of D1 (Mon = 0), minute in the upper 6 bits of D2, second in D3, hour in the low 5 bits of D4. An EasyStart Pro with an unset clock sends Monday 00:00 |
+
+The clock and timers run in the controller, not in the heater: the heater is only told about them and does not start by itself. Whoever runs a timer has to send HEAT at the start time and IDLE at the end — the 0x54 command carries no duration.
 
 ---
 
