@@ -180,9 +180,9 @@ If the heater's supply is interrupted (battery disconnect, low-voltage cutoff, p
 
 ## OEM diagnostics — CAN standby mode
 
-If another controller (e.g. a real EasyStart Pro) appears on the bus while the WeAct is transmitting, the component sees its 0x60D or 0x54–0x57 frames and sets *Espar Fault* = `OTHER CONTROLLER ON BUS — enable CAN Standby`. Its frames (0x54–0x57, 0x60D, 0x65 and the init burst) are logged at debug level, not raised as unknown-ID faults.
+If another controller (e.g. a real EasyStart Pro) appears on the bus while the WeAct is transmitting, the component sees its 0x60D heartbeat and sets *Espar Fault* = `OTHER CONTROLLER ON BUS — enable CAN Standby`. Its frames (0x54–0x57, 0x60D, 0x65 and the init burst) are logged at debug level, not raised as unknown-ID faults.
 
-The WeAct currently *emulates the EasyStart Pro*: it sends the same CAN IDs (0x54–0x57, 0x60D, 0x65). With a real Pro also transmitting, the two corrupt each other's frames, which has been seen to trigger fault **P000342** ("invalid configuration — check ADR coding"; ADR is Eberspächer's dangerous-goods mode, not a bus address). Eberspächer does support two control elements in parallel, but how the second one identifies itself is still unknown ([#15](https://github.com/TrooperDuper/espar-airtronic-esphome/issues/15)). Until then, turn on CAN Standby whenever a real Pro is on the bus.
+Eberspächer supports multiple control elements on the CAN bus — each gets its own address via ADR coding (an EasyStart Pro and EasyStart Remote+ can run together). The WeAct currently *emulates the EasyStart Pro*, so running it alongside a real EasyStart Pro puts two devices with the same identity on the bus — an invalid configuration that can trigger fault **P000342** ("invalid configuration — check ADR coding"). This is an addressing collision, not a controller-count limit.
 
 The `Espar CAN Standby` switch (defined in `espar-heater.yaml`) suspends all outbound frames from the WeAct without physically unplugging anything. Turning it ON from HA before connecting an OEM tool prevents the conflict. Turning it OFF afterwards automatically re-runs the CAN handshake.
 
