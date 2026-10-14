@@ -3,7 +3,8 @@ ESPHome external component — Espar Airtronic S3 CAN bus controller.
 Trooper camper project.  WeAct CAN485 V1.0 (ESP32-D0WD-V3).
 
 Exposes:
-  - climate entity  (HEAT / FAN_ONLY / OFF) with external current-temp sensor
+  - climate entity  (HEAT / FAN_ONLY / OFF). HEAT sends the target to the heater,
+                    which starts, modulates, pauses and restarts by itself
   - text_sensor     heater_state  ("STARTUP" / "IDLE" / "HEATING" / "FAN" / "COOLDOWN" / "UNKNOWN")
   - binary_sensor   flame_active  ("Espar Heating": true while heater state D1=0x09 HEATING,
                                    including ignition)
@@ -12,7 +13,8 @@ Exposes:
   - text_sensor     fault_text    (human-readable fault / "OK")
 
 Optional `diagnostics:` block — read-only UDS requests on 0x7A0 → 0x73C. Without it
-nothing is ever requested. Nothing is written, reset or cleared; nothing is sent in
+only the intake air and the combustion phase are requested (the heater's own room
+temperature and its control pause), and not with room_sensor: controller. Nothing is written, reset or cleared; nothing is sent in
 CAN standby. See docs/uds-diagnostics.md. Entities (all optional):
   - binary_sensor   flame_detected            (the heater's own flame detection)
   - text_sensor     combustion_state          ("No fuel" / "Fuel on")
@@ -35,12 +37,12 @@ CAN standby. See docs/uds-diagnostics.md. Entities (all optional):
   - text_sensor     software_version, hardware_version, part_number
   - text_sensor     fault_memory              (stored P-codes, "None" when empty)
 
-New config options (see CONFIG_SCHEMA below):
+Config options (see CONFIG_SCHEMA below):
   cabin_temp_unit   — "celsius" (default) or "fahrenheit"; handles °F→°C
                       conversion internally, no lambda filter needed in YAML.
-  pause_mode        — "off" (default) or "fan"; controls heater behaviour
-                      when cabin reaches setpoint.  "fan" keeps the blower
-                      running (pseudo-pause) instead of a full shutdown.
+  room_sensor       — which room temperature the heater regulates on:
+                      "heater" (default, its own intake sensor read over UDS) or
+                      "controller" (current_temperature_sensor).
 """
 
 import esphome.codegen as cg
@@ -82,16 +84,11 @@ EsparCanComponent = espar_can_ns.class_(
 )
 
 # ── YAML keys ────────────────────────────────────────────────────────────
-CONF_HEAT_SETPOINT_F            = "heat_setpoint_f"
 CONF_CURRENT_TEMPERATURE_SENSOR = "current_temperature_sensor"
 CONF_CABIN_TEMP_UNIT            = "cabin_temp_unit"
-CONF_PAUSE_MODE                 = "pause_mode"
+CONF_ROOM_SENSOR                = "room_sensor"
 CONF_CONTROLLER_ID              = "controller_id"
 CONF_AUTO_CLEAR_IDLE_LOCK       = "auto_clear_idle_lock"
-CONF_HYSTERESIS                 = "hysteresis"
-CONF_MIN_RUN_TIME               = "min_run_time"
-CONF_MIN_OFF_TIME               = "min_off_time"
-CONF_MAX_STARTS_PER_HOUR        = "max_starts_per_hour"
 CONF_INIT_0X62_BYTE             = "init_0x62_byte"
 CONF_HEATER_STATE               = "heater_state"
 CONF_FLAME_ACTIVE               = "flame_active"
@@ -100,15 +97,23 @@ CONF_HEATER_CONNECTED           = "heater_connected"
 CONF_FAULT_TEXT                 = "fault_text"
 CONF_DIAGNOSTICS                = "diagnostics"
 
-# ── Custom validators ─────────────────────────────────────────────────────
-# YAML parses bare `off` as boolean False before ESPHome sees it.
-# This validator accepts both the boolean form and the quoted string form.
-def _validate_pause_mode(value):
-    if value is False or value == "off":
-        return "off"
-    if value is True or value == "fan":
-        return "fan"
-    raise cv.Invalid(f"Invalid pause_mode '{value}': must be 'off' or 'fan' (quote the value in YAML)")
+# ── Removed options ───────────────────────────────────────────────────────
+# The component no longer switches the heater on and off (#9): the heater gets the
+# climate target and regulates by itself. Old configs get a clear message.
+_REMOVED = (
+    "removed: the heater regulates to the climate target by itself (modulates, pauses), "
+    "so the component no longer switches it on and off. Delete this option. "
+    "See 'Regulation' in esphome/README.md."
+)
+REMOVED_OPTIONS = (
+    "heat_setpoint_f",
+    "pause_mode",
+    "regulation",
+    "hysteresis",
+    "min_run_time",
+    "min_off_time",
+    "max_starts_per_hour",
+)
 
 # ── Diagnostics (UDS, read-only) ──────────────────────────────────────────
 def _temperature(**kw):
@@ -225,29 +230,24 @@ CONFIG_SCHEMA = (
     climate.climate_schema(EsparCanComponent)
     .extend(
         {
-            # Fixed high setpoint (°F) sent to the heater hardware.
-            # Our own thermostat logic (current vs target) controls on/off.
-            cv.Optional(CONF_HEAT_SETPOINT_F, default=85.0): cv.float_range(
-                min=70.0, max=95.0
-            ),
-            # Averaged cabin temperature — typically a HA template sensor.
+            # Cabin temperature — typically a HA template sensor. Sent to the heater
+            # as the room temperature with room_sensor: controller.
             cv.Optional(CONF_CURRENT_TEMPERATURE_SENSOR): cv.use_id(sensor.Sensor),
             # Unit of the cabin temperature sensor.
             # "celsius"    (default) — value passed through unchanged.
-            # "fahrenheit" — component converts °F→°C internally before the
-            #                thermostat comparison.  Remove any lambda filter
-            #                from the HA sensor block when using this option.
+            # "fahrenheit" — component converts °F→°C internally.  Remove any
+            #                lambda filter from the HA sensor block when using this option.
             cv.Optional(CONF_CABIN_TEMP_UNIT, default="celsius"): cv.one_of(
                 "celsius", "fahrenheit", lower=True
             ),
-            # Behaviour when the cabin reaches the target setpoint.
-            # "off" (default) — send IDLE; heater does full 4-min cooldown
-            #                   and glow-plug clean on every cycle.
-            # "fan"           — send FAN_ONLY; blower keeps running without
-            #                   combustion (pseudo-pause mode).  Avoids the
-            #                   full stop/start cycle.  Draws ~4W continuous
-            #                   battery power while paused.
-            cv.Optional(CONF_PAUSE_MODE, default="off"): _validate_pause_mode,
+            # The room temperature the heater regulates on (#9). Can also be switched
+            # at run time with set_room_sensor_controller().
+            # "heater" (default) — its own intake sensor, read over UDS (read-only, also
+            #                      without a diagnostics: block) minus the heater's 3 K.
+            # "controller"       — current_temperature_sensor.
+            cv.Optional(CONF_ROOM_SENSOR, default="heater"): cv.one_of(
+                "heater", "controller", lower=True
+            ),
             # Controller identity. 24-bit ID in 0x60D D3–D5 and the
             # last byte of init frame 0x62. Defaults reproduce the maintainer's Pro.
             cv.Optional(CONF_CONTROLLER_ID, default=0x82B609): cv.int_range(min=0, max=0xFFFFFF),
@@ -255,14 +255,7 @@ CONFIG_SCHEMA = (
             # After a power interruption the heater sits in IDLE with D3≠0 and
             # ignores commands. When true, send a FAN→IDLE pulse to release it.
             cv.Optional(CONF_AUTO_CLEAR_IDLE_LOCK, default=True): cv.boolean,
-            # Anti-short-cycle (issue #9). Gate only the thermostat's own
-            # on/off decisions; user mode changes and faults act immediately.
-            # hysteresis: dead-band below target, in cabin_temp_unit degrees
-            #             (default 0.3 °C ≈ 0.54 °F).
-            cv.Optional(CONF_HYSTERESIS): cv.float_range(min=0.0, max=5.0),
-            cv.Optional(CONF_MIN_RUN_TIME, default="0s"): cv.positive_time_period_seconds,
-            cv.Optional(CONF_MIN_OFF_TIME, default="0s"): cv.positive_time_period_seconds,
-            cv.Optional(CONF_MAX_STARTS_PER_HOUR, default=0): cv.int_range(min=0, max=12),
+            **{cv.Optional(k): cv.invalid(f"{k}: {_REMOVED}") for k in REMOVED_OPTIONS},
             # Optional entity outputs
             cv.Optional(CONF_HEATER_STATE):     text_sensor.text_sensor_schema(),
             cv.Optional(CONF_FLAME_ACTIVE):     binary_sensor.binary_sensor_schema(),
@@ -285,20 +278,11 @@ async def to_code(config):
     await cg.register_component(var, config)
     await climate.register_climate(var, config)
 
-    cg.add(var.set_heat_setpoint_f(config[CONF_HEAT_SETPOINT_F]))
     cg.add(var.set_cabin_temp_fahrenheit(config[CONF_CABIN_TEMP_UNIT] == "fahrenheit"))
-    cg.add(var.set_pause_mode_fan(config[CONF_PAUSE_MODE] == "fan"))
+    cg.add(var.set_room_sensor_controller(config[CONF_ROOM_SENSOR] == "controller"))
     cg.add(var.set_controller_id(config[CONF_CONTROLLER_ID]))
     cg.add(var.set_init_0x62_byte(config[CONF_INIT_0X62_BYTE]))
     cg.add(var.set_auto_clear_idle_lock(config[CONF_AUTO_CLEAR_IDLE_LOCK]))
-    if CONF_HYSTERESIS in config:
-        h = config[CONF_HYSTERESIS]
-        if config[CONF_CABIN_TEMP_UNIT] == "fahrenheit":
-            h = h * 5.0 / 9.0
-        cg.add(var.set_hysteresis_c(h))
-    cg.add(var.set_min_run_time_s(config[CONF_MIN_RUN_TIME].total_seconds))
-    cg.add(var.set_min_off_time_s(config[CONF_MIN_OFF_TIME].total_seconds))
-    cg.add(var.set_max_starts_per_hour(config[CONF_MAX_STARTS_PER_HOUR]))
 
     if CONF_CURRENT_TEMPERATURE_SENSOR in config:
         sens = await cg.get_variable(config[CONF_CURRENT_TEMPERATURE_SENSOR])

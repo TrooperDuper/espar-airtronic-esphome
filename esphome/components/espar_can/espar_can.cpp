@@ -80,6 +80,13 @@ void EsparCanComponent::loop() {
   if (!heater_connected_ && (now - t_init_last_) >= INIT_RESEND_MS) {
     send_init_burst_();
     t_init_last_ = now;
+    settings_dirty_ = false;
+  }
+
+  // ── Room sensor selection changed at run time: tell the heater once ─
+  if (settings_dirty_ && heater_connected_) {
+    settings_dirty_ = false;
+    send_init_burst_();
   }
 
   // ── Heartbeat 0x60D @ 100ms ─────────────────────────────────────────
@@ -100,13 +107,6 @@ void EsparCanComponent::loop() {
   // ── IDLE lock release (D3≠0 in IDLE after power interruption) ───────
   handle_idle_lock_(now);
 
-  // ── Periodic thermostat re-evaluation (anti-short-cycle timers expire
-  //    even when the cabin temperature doesn't change) ───────────────────
-  if ((now - t_thermo_eval_) >= THERMO_EVAL_MS) {
-    t_thermo_eval_ = now;
-    if (this->mode == climate::CLIMATE_MODE_HEAT) evaluate_thermostat_();
-  }
-
   // ── Other controller gone? ───────────────────────────────────────────
   if (foreign_ctrl_present_ && (now - foreign_ctrl_last_ms_) > FOREIGN_CTRL_TIMEOUT_MS) {
     foreign_ctrl_present_ = false;
@@ -120,7 +120,6 @@ void EsparCanComponent::loop() {
   // ── Heartbeat timeout: heater went offline ────────────────────────────
   if (heater_connected_ && (now - heater_last_seen_) > HEARTBEAT_TIMEOUT_MS) {
     heater_connected_ = false;
-    heater_ctr_       = 0xFFFE;
     ESP_LOGW(TAG, "Heater heartbeat lost — waiting for reconnect");
     if (connected_sensor_) connected_sensor_->publish_state(false);
     publish_fault_("Heartbeat lost");
@@ -141,16 +140,6 @@ void EsparCanComponent::loop() {
       } else {
         publish_fault_("Failed start #" + std::to_string(failed_start_count_));
       }
-    }
-  }
-
-  // ── Behavioral: HEAT cmd sent but heater not heating after 30s → warn ─
-  if (waiting_heat_confirm_ && cmd_heating_) {
-    if ((now - heat_cmd_ms_) > HEAT_CONFIRM_MS &&
-        heater_d1_state_ != HEATER_STATE_HEATING) {
-      waiting_heat_confirm_ = false;
-      ESP_LOGW(TAG, "Heat confirm timeout — heater not entering HEATING state");
-      publish_fault_("Heat confirm timeout");
     }
   }
 
@@ -190,7 +179,6 @@ void EsparCanComponent::control(const climate::ClimateCall &call) {
   if (call.get_mode().has_value()) {
     this->mode = *call.get_mode();
     changed = true;
-    user_mode_change_ = true;   // explicit user action bypasses min-off / start cap
     ESP_LOGI(TAG, "Climate mode → %s",
       this->mode == climate::CLIMATE_MODE_HEAT     ? "HEAT" :
       this->mode == climate::CLIMATE_MODE_FAN_ONLY ? "FAN_ONLY" : "OFF");
@@ -199,93 +187,45 @@ void EsparCanComponent::control(const climate::ClimateCall &call) {
   if (call.get_target_temperature().has_value()) {
     this->target_temperature = *call.get_target_temperature();
     changed = true;
-    user_mode_change_ = true;   // a setpoint change is also an explicit user action
     ESP_LOGD(TAG, "Target temperature → %.1f°C (%.1f°F)",
       this->target_temperature,
       this->target_temperature * 9.0f / 5.0f + 32.0f);
   }
 
   if (changed) {
-    evaluate_thermostat_();
+    apply_climate_mode_();
     this->publish_state();
   }
 }
 
-// Register a callback so the component re-evaluates whenever the averaged
-// cabin temperature updates (typically via HA API sensor).
+// Register a callback for the cabin temperature (typically an HA API sensor). It is
+// sent to the heater as the room temperature when room_sensor is "controller".
 void EsparCanComponent::set_current_temperature_sensor(sensor::Sensor *s) {
   current_temp_sensor_ = s;
   s->add_on_state_callback([this](float val) {
     if (!std::isnan(val)) {
-      // Convert to °C for the thermostat comparison (ESPHome climate always uses °C internally).
+      // ESPHome climate always uses °C internally.
       // cabin_temp_fahrenheit_ is set true when cabin_temp_unit: fahrenheit in YAML.
       if (cabin_temp_fahrenheit_)
         val = (val - 32.0f) * 5.0f / 9.0f;
+      ext_temp_c_ = val;
+      // On the heater's own sensor, the climate entity shows the heater's value
+      // instead (publish_room_temperature_()).
+      if (needs_intake_()) return;
       this->current_temperature = val;
-      evaluate_thermostat_();
       this->publish_state();
     }
   });
 }
 
-// Core thermostat decision logic.
-// Called on every temperature update and on every mode/setpoint change.
-void EsparCanComponent::evaluate_thermostat_() {
+// Climate mode → command. The heater has the real setpoint and decides by itself
+// when to burn, modulate or pause, so HEAT keeps the heat request up.
+void EsparCanComponent::apply_climate_mode_() {
   if (locked_out_) return;
-  struct ClearUserFlag { bool &f; ~ClearUserFlag() { f = false; } } clear_user{user_mode_change_};
-
   switch (this->mode) {
-    case climate::CLIMATE_MODE_OFF:
-      apply_mode_(false, false);
-      break;
-
-    case climate::CLIMATE_MODE_FAN_ONLY:
-      apply_mode_(false, true);
-      break;
-
-    case climate::CLIMATE_MODE_HEAT: {
-      if (std::isnan(this->current_temperature)) {
-        // No temperature reading yet — default to heating so the cabin warms up.
-        // The heater's internal thermocouple acts as safety ceiling.
-        apply_mode_(true, false);
-        break;
-      }
-      float cur = this->current_temperature;
-      float tgt = this->target_temperature;
-      uint32_t now = millis();
-      bool user = user_mode_change_;
-      if (cur < (tgt - hysteresis_c_)) {
-        // Below setpoint minus hysteresis → start heating (subject to anti-short-cycle)
-        if (!cmd_heating_ && !user) {
-          if (min_off_ms_ && heat_off_valid_ && (now - heat_off_ms_) < min_off_ms_) {
-            log_ascs_hold_(1, min_off_ms_ - (now - heat_off_ms_));
-            break;
-          }
-          if (max_starts_per_hour_ && starts_last_hour_(now) >= max_starts_per_hour_) {
-            log_ascs_hold_(2, 0);
-            break;
-          }
-        }
-        if (!cmd_heating_) record_start_(now);
-        ascs_hold_reason_ = 0;
-        apply_mode_(true, false);
-      } else if (cur >= tgt) {
-        // At or above setpoint → pause or idle depending on pause_mode config.
-        // pause_mode_fan_=true: stay in FAN_ONLY (blower keeps running, no combustion).
-        // pause_mode_fan_=false (default): send IDLE (full ~4-min cooldown cycle).
-        if (cmd_heating_ && min_run_ms_ && (now - heat_on_ms_) < min_run_ms_) {
-          log_ascs_hold_(3, min_run_ms_ - (now - heat_on_ms_));
-          break;
-        }
-        ascs_hold_reason_ = 0;
-        apply_mode_(false, pause_mode_fan_);
-      }
-      // Within hysteresis band → maintain current command state (no change)
-      break;
-    }
-
-    default:
-      break;
+    case climate::CLIMATE_MODE_HEAT:     apply_mode_(true, false);  break;
+    case climate::CLIMATE_MODE_FAN_ONLY: apply_mode_(false, true);  break;
+    default:                             apply_mode_(false, false); break;
   }
 }
 
@@ -298,17 +238,13 @@ void EsparCanComponent::apply_mode_(bool heat, bool fan) {
 
   if (heat == cmd_heating_ && fan == cmd_fan_) return;  // no change
 
-  if (heat && !cmd_heating_) heat_on_ms_ = millis();
-  if (!heat && cmd_heating_) { heat_off_ms_ = millis(); heat_off_valid_ = true; }
-
   cmd_heating_ = heat;
   cmd_fan_     = fan;
 
   if (heat) {
-    cmd_temp_c_x10_      = fahrenheit_to_can(heat_setpoint_f_);
+    cmd_temp_c_x10_      = setpoint_word_();
     waiting_heat_confirm_ = true;
-    heat_cmd_ms_          = millis();
-    ESP_LOGI(TAG, "Commanding HEAT at %.0f°F (CAN word 0x%04X)", heat_setpoint_f_, cmd_temp_c_x10_);
+    ESP_LOGI(TAG, "Commanding HEAT, heater regulates to %.1f°C (CAN word 0x%04X)", cmd_temp_c_x10_ / 10.0f, cmd_temp_c_x10_);
   } else if (fan) {
     waiting_heat_confirm_ = false;
     ESP_LOGI(TAG, "Commanding FAN");
@@ -330,8 +266,11 @@ void EsparCanComponent::update_climate_action_() {
   } else if (this->mode == climate::CLIMATE_MODE_FAN_ONLY) {
     new_action = climate::CLIMATE_ACTION_FAN;
   } else if (cmd_heating_) {
-    // Report actual heater state so HA can show whether combustion is active
-    new_action = (heater_d1_state_ == HEATER_STATE_HEATING)
+    // Report actual heater state so HA can show whether combustion is active.
+    // In its own control pause the heater still reports D1=0x09; only FD10 shows it.
+    bool pause = diag_phase_ == PHASE_CONTROL_PAUSE &&
+                 (millis() - t_diag_phase_) < 3 * diag_interval_ms_;
+    new_action = (heater_d1_state_ == HEATER_STATE_HEATING && !pause)
         ? climate::CLIMATE_ACTION_HEATING
         : climate::CLIMATE_ACTION_IDLE;
   } else {
@@ -446,7 +385,7 @@ void EsparCanComponent::handle_rx_() {
 
         case DIAG_RESPONSE_ID:
           // Diagnostic answer (ours, or another tester's while the WeAct is quiet)
-          if (diag_enabled_ && !msg.rtr && msg.data_length_code >= 2) handle_diag_frame_(msg);
+          if (diag_active_() && !msg.rtr && msg.data_length_code >= 2) handle_diag_frame_(msg);
           break;
 
         case DIAG_REQUEST_ID:
@@ -477,9 +416,6 @@ void EsparCanComponent::parse_0x2C4_(const twai_message_t &msg) {
   uint16_t new_ctr        = static_cast<uint16_t>(msg.data[4]) |
                             (static_cast<uint16_t>(msg.data[5]) << 8);
 
-  // Always update counter — used in our TX frames
-  heater_ctr_ = new_ctr;
-
   // Log every change of the D3 fault byte (diagnostic; low rate)
   if (new_fault_code != heater_fault_code_) {
     ESP_LOGW(TAG, "D3 fault byte 0x%02X -> 0x%02X (D1=0x%02X D2=0x%02X)",
@@ -490,6 +426,14 @@ void EsparCanComponent::parse_0x2C4_(const twai_message_t &msg) {
   // Seen for ~4 min after heating while the blower purges, then D2 -> 0x00.
   bool new_cooldown = (new_state == HEATER_STATE_IDLE) && (new_sub & 0x08)
                       && (new_fault_code == HEATER_FAULT_NONE);
+
+  // While the heater idles and nothing is commanded, D5/D6 is its own room
+  // temperature ((°C + 50) × 10). Once it runs it mirrors what the control unit
+  // sends, so the value is only taken here (fallback for own_room_temperature_()).
+  if (new_state == HEATER_STATE_IDLE && (new_sub & 0x08) == 0 && !cmd_heating_ && !cmd_fan_ &&
+      new_ctr != 0xFFFE && new_ctr != 500) {
+    own_room_word_ = new_ctr;
+  }
 
   bool state_changed = (new_cooldown != cooldown_) || (new_state != heater_d1_state_) || (new_flame != flame_active_)
                      || (new_fault_code != heater_fault_code_)
@@ -680,11 +624,11 @@ bool EsparCanComponent::diag_wanted_(uint8_t item, uint32_t now) const {
   if (diag_unsupported_ & (1u << item)) return false;
   switch (item) {
     case DIAG_FLAME:        return flame_detected_sensor_ || combustion_state_sensor_;
-    case DIAG_TEMPERATURES: return flame_temperature_sensor_ || intake_temperature_sensor_;
+    case DIAG_TEMPERATURES: return flame_temperature_sensor_ || intake_temperature_sensor_ || needs_intake_();
     case DIAG_VOLTAGE:      return supply_voltage_sensor_ != nullptr;
     case DIAG_FUEL_PUMP:    return fuel_pump_frequency_sensor_ != nullptr;
     case DIAG_GLOW_PLUG:    return glow_plug_sensor_ || glow_plug_power_sensor_;
-    case DIAG_PHASE:        return combustion_phase_sensor_ || phase_step_sensor_ || phase_time_sensor_;
+    case DIAG_PHASE:        return true;  // also shows the control pause in the climate action
     case DIAG_BLOWER:       return blower_level_sensor_ != nullptr;
     case DIAG_FUEL:         return fuel_rate_sensor_ || fuel_total_sensor_;
     case DIAG_POWER_DEMAND: return power_demand_sensor_ != nullptr;
@@ -708,7 +652,7 @@ bool EsparCanComponent::diag_wanted_(uint8_t item, uint32_t now) const {
 }
 
 void EsparCanComponent::handle_diagnostics_(uint32_t now) {
-  if (!diag_enabled_) return;
+  if (!diag_active_()) return;
 
   if (tx_standby_ || !heater_connected_) {
     // Nothing to ask; start with a full sweep once the heater is back
@@ -869,9 +813,12 @@ void EsparCanComponent::diag_process_response_(const uint8_t *data, uint16_t len
         uint16_t raw = u16be(0);
         flame_temperature_sensor_->publish_state(raw == 0xFFFF ? NAN : raw / 100.0f - 50.0f);
       }
-      if (n >= 4 && intake_temperature_sensor_) {
+      if (n >= 4) {
         uint16_t raw = u16be(2);
-        intake_temperature_sensor_->publish_state(raw == 0xFFFF ? NAN : raw / 100.0f - 50.0f);
+        intake_temp_c_ = (raw == 0xFFFF) ? NAN : raw / 100.0f - 50.0f;
+        t_intake_      = millis();
+        if (intake_temperature_sensor_) intake_temperature_sensor_->publish_state(intake_temp_c_);
+        if (needs_intake_()) publish_room_temperature_();
       }
       break;
 
@@ -891,6 +838,10 @@ void EsparCanComponent::diag_process_response_(const uint8_t *data, uint16_t len
       break;
 
     case DIAG_PHASE: {
+      if (n >= 2) {
+        diag_phase_   = v[1];
+        t_diag_phase_ = millis();
+      }
       // Bytes 2–4 (while starting) or 5–7 (in cooldown): step number and the
       // seconds spent in it × 100. Both groups are zero while burning steadily.
       if (n >= 8) {
@@ -1079,7 +1030,6 @@ void EsparCanComponent::set_tx_standby(bool s) {
 // Re-establish connection with the heater (fresh init burst on next loop).
 void EsparCanComponent::restart_handshake_() {
   heater_connected_ = false;
-  heater_ctr_       = 0xFFFE;
   init_done_        = false;
   t_init_last_      = millis() - INIT_RESEND_MS;  // fire immediately next loop
 }
@@ -1107,7 +1057,12 @@ void EsparCanComponent::send_init_burst_() {
   static const uint8_t d5D[] = {0x00,0x00,0x00,0x00,0x00,0x00,0xFE,0xFF};
   static const uint8_t d5E[] = {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00};
   const uint8_t d62[] = {0x12,0x00,0x00,0x00,0x00,0x00,0x00,init_62_last_};
-  static const uint8_t d63[] = {0x32,0x01,0x01,0x00,0x00,0x00,0x00,0x00};
+  // 0x63: D1 = temperature offset ((raw − 50) / 10 °C), D2 = sensor selection
+  // (01 = sensor in the control unit), D4 = change counter, as the OEM control unit
+  // sends it when a setting changes. D2 stays 01: the room value always comes from
+  // the control unit, also when it is the heater's own intake sensor handed back —
+  // "no value" (FE FF) with D2 = 00 made the heater regulate on 0 °C.
+  const uint8_t d63[] = {0x32, 0x01, 0x01, settings_change_ctr_, 0x00, 0x00, 0x00, 0x00};
   static const uint8_t d64[] = {0x3C,0x00,0x05,0x00,0xC8,0x00,0xFF,0x03};
   static const uint8_t d66[] = {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00};
   static const uint8_t d67[] = {0xBE,0x3E,0x27,0x00,0x01,0x1E,0x00,0x00};
@@ -1143,8 +1098,11 @@ void EsparCanComponent::send_heartbeat_() {
 // Primary command group — sent every 200ms
 // 0x54 payload encodes mode and setpoint; 0x55/56/57 are static config
 void EsparCanComponent::send_command_group_() {
-  uint8_t ctr_lo = static_cast<uint8_t>(heater_ctr_ & 0xFF);
-  uint8_t ctr_hi = static_cast<uint8_t>((heater_ctr_ >> 8) & 0xFF);
+  uint16_t room  = room_word_();
+  uint8_t ctr_lo = static_cast<uint8_t>(room & 0xFF);
+  uint8_t ctr_hi = static_cast<uint8_t>((room >> 8) & 0xFF);
+  // A new target on the climate entity reaches the heater with the next frame
+  if (cmd_heating_) cmd_temp_c_x10_ = setpoint_word_();
 
   uint8_t d54[8] = {};
 
@@ -1187,6 +1145,66 @@ void EsparCanComponent::send_command_group_() {
   send_frame_(0x57, d57, 8);
 }
 
+// ── Regulation (the heater regulates) ────────────────────────────────────
+void EsparCanComponent::set_room_sensor_controller(bool f) {
+  if (f == room_sensor_controller_) return;
+  room_sensor_controller_ = f;
+  if (!driver_installed_) return;
+  if (f && current_temp_sensor_ == nullptr)
+    ESP_LOGW(TAG, "Room sensor → controller requested, but no current_temperature_sensor: staying on the heater's sensor");
+  else
+    ESP_LOGI(TAG, "Room sensor → %s", f ? "controller" : "heater");
+  settings_change_ctr_ = settings_change_ctr_ % 3 + 1;
+  settings_dirty_      = true;
+  diag_sweep_requested_ = true;
+  if (needs_intake_()) {
+    publish_room_temperature_();
+  } else if (!std::isnan(ext_temp_c_)) {
+    this->current_temperature = ext_temp_c_;
+    this->publish_state();
+  }
+}
+
+// Setpoint sent with a HEAT command: the climate target.
+uint16_t EsparCanComponent::setpoint_word_() const {
+  float t = std::isnan(this->target_temperature) ? 21.0f : this->target_temperature;
+  if (t < 5.0f) t = 5.0f;
+  if (t > 35.0f) t = 35.0f;
+  return static_cast<uint16_t>(t * 10.0f + 0.5f);
+}
+
+// The heater's own room temperature. It can't simply be told to use it — FE FF in the
+// room value makes it regulate on 0 °C — so the intake sensor is read over UDS and
+// handed back with the heater's own 3 K correction. Fallback: the value it reported
+// itself while idle.
+float EsparCanComponent::own_room_temperature_() const {
+  if (!std::isnan(intake_temp_c_) && (millis() - t_intake_) < INTAKE_MAX_AGE_MS)
+    return intake_temp_c_ - INTAKE_TO_ROOM_OFFSET_K;
+  if (own_room_word_ != 0xFFFE) return own_room_word_ / 10.0f - 50.0f;
+  return NAN;
+}
+
+// On the heater's own sensor, the climate entity shows that value.
+void EsparCanComponent::publish_room_temperature_() {
+  float t = own_room_temperature_();
+  if (std::isnan(t)) return;
+  if (std::isnan(this->current_temperature) || std::fabs(t - this->current_temperature) >= 0.1f) {
+    this->current_temperature = t;
+    this->publish_state();
+  }
+}
+
+// Room temperature the control unit reports in 0x54 D5/D6 and 0x65 D1/D2, (°C + 50) × 10:
+// current_temperature_sensor, or the heater's own sensor.
+uint16_t EsparCanComponent::room_word_() const {
+  float t = room_from_controller_() ? ext_temp_c_ : own_room_temperature_();
+  // Without any reading, report the setpoint itself: no heat demand rather than 0 °C
+  if (std::isnan(t)) t = std::isnan(this->target_temperature) ? 21.0f : this->target_temperature;
+  if (t < -40.0f) t = -40.0f;
+  if (t > 80.0f) t = 80.0f;
+  return static_cast<uint16_t>((t + 50.0f) * 10.0f + 0.5f);
+}
+
 // IDLE-lock release state machine. Pulses FAN for IDLE_LOCK_PULSE_MS, forces
 // IDLE for IDLE_LOCK_SETTLE_MS, and retries up to IDLE_LOCK_MAX_TRIES times.
 // The user's HEAT/FAN command resumes automatically once the lock clears.
@@ -1226,31 +1244,6 @@ void EsparCanComponent::handle_idle_lock_(uint32_t now) {
   }
 }
 
-// ── Anti-short-cycle helpers ─────────────────────────────────────────────
-uint8_t EsparCanComponent::starts_last_hour_(uint32_t now) const {
-  uint8_t n = 0;
-  for (uint8_t i = 0; i < START_LOG_LEN; i++)
-    if (start_log_[i] && (now - start_log_[i]) < 3600000UL) n++;
-  return n;
-}
-
-void EsparCanComponent::record_start_(uint32_t now) {
-  start_log_[start_log_idx_] = now ? now : 1;
-  start_log_idx_ = (start_log_idx_ + 1) % START_LOG_LEN;
-}
-
-// Log once per reason change: 1=min-off, 2=max starts/h, 3=min-run
-void EsparCanComponent::log_ascs_hold_(uint8_t reason, uint32_t wait_ms) {
-  (void) wait_ms;
-  if (reason == ascs_hold_reason_) return;
-  ascs_hold_reason_ = reason;
-  switch (reason) {
-    case 1: ESP_LOGI(TAG, "Anti-short-cycle: restart held, min off time (%lus left)", (unsigned long)(wait_ms / 1000)); break;
-    case 2: ESP_LOGI(TAG, "Anti-short-cycle: restart held, %u starts in the last hour", (unsigned) max_starts_per_hour_); break;
-    case 3: ESP_LOGI(TAG, "Anti-short-cycle: still heating, min run time (%lus left)", (unsigned long)(wait_ms / 1000)); break;
-  }
-}
-
 // Another controller's frames (0x60D / 0x54–0x57) seen on the bus.
 void EsparCanComponent::note_foreign_controller_(const twai_message_t &msg) {
   foreign_ctrl_last_ms_ = millis();
@@ -1285,8 +1278,9 @@ void EsparCanComponent::handle_status_burst_(uint32_t now) {
 
   if ((now - t_burst_frame_last_) >= STATUS_BURST_INTV_MS || status_burst_idx_ == 0) {
     static const uint8_t d3_vals[] = {0x01, 0x02, 0x03};
-    uint8_t ctr_lo = static_cast<uint8_t>(heater_ctr_ & 0xFF);
-    uint8_t ctr_hi = static_cast<uint8_t>((heater_ctr_ >> 8) & 0xFF);
+    uint16_t room  = room_word_();
+    uint8_t ctr_lo = static_cast<uint8_t>(room & 0xFF);
+    uint8_t ctr_hi = static_cast<uint8_t>((room >> 8) & 0xFF);
     uint8_t d65[8] = {ctr_lo, ctr_hi, d3_vals[status_seq_], 0x00, 0x00, 0x00, 0x00, 0x00};
     send_frame_(0x65, d65, 8);
     t_burst_frame_last_ = now;
@@ -1312,15 +1306,11 @@ void EsparCanComponent::publish_fault_(const std::string &msg) {
 void EsparCanComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "Espar Airtronic S3 CAN Controller:");
   ESP_LOGCONFIG(TAG, "  CAN TX: GPIO%d  RX: GPIO%d  500 kbps", CAN_TX_PIN, CAN_RX_PIN);
-  ESP_LOGCONFIG(TAG, "  Heat setpoint to heater: %.0f°F", heat_setpoint_f_);
   ESP_LOGCONFIG(TAG, "  Cabin temp unit: %s", cabin_temp_fahrenheit_ ? "fahrenheit (converting °F→°C)" : "celsius (passthrough)");
-  ESP_LOGCONFIG(TAG, "  Pause mode: %s", pause_mode_fan_ ? "fan (FAN_ONLY at setpoint)" : "off (IDLE at setpoint)");
   ESP_LOGCONFIG(TAG, "  Controller ID (0x60D D3-D5): %02X %02X %02X | 0x62 D8: 0x%02X",
                 ctrl_id_[0], ctrl_id_[1], ctrl_id_[2], init_62_last_);
-  ESP_LOGCONFIG(TAG, "  Thermostat hysteresis: %.2f°C", hysteresis_c_);
-  ESP_LOGCONFIG(TAG, "  Anti-short-cycle: min run %lus, min off %lus, max starts/h %u",
-                (unsigned long)(min_run_ms_ / 1000), (unsigned long)(min_off_ms_ / 1000), (unsigned) max_starts_per_hour_);
   ESP_LOGCONFIG(TAG, "  Auto-clear IDLE lock: %s", auto_clear_idle_lock_ ? "yes" : "no");
+  ESP_LOGCONFIG(TAG, "  Regulation: heater, on %s", room_from_controller_() ? "current_temperature_sensor" : "its own sensor");
   LOG_TEXT_SENSOR("  ",    "Heater State",     heater_state_sensor_);
   LOG_BINARY_SENSOR("  ",  "Heating",          flame_sensor_);
   LOG_BINARY_SENSOR("  ",  "Status Flag 0x20", flag_0x20_sensor_);

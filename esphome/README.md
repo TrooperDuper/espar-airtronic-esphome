@@ -70,9 +70,18 @@ sensor:
 
 If your HA cabin temperature sensor reports in **Fahrenheit**, set `cabin_temp_unit: fahrenheit` in the `espar_can:` block — the component converts °F→°C internally and no lambda filter is needed.
 
-### 4. Create a cabin temperature sensor in HA (optional but recommended)
+**Two example configs:**
 
-The component works without a temperature sensor — it will heat continuously when mode=HEAT. For thermostat behavior, create a template sensor in HA that averages your cabin sensors:
+| File | What it has |
+|---|---|
+| `espar-heater.yaml` | Minimal: the core entities, diagnostics only as comments |
+| `espar-heater-full.yaml` | Everything: a select to switch the room sensor at run time, every diagnostic entity, a *Max Run Time* safety limit, and the web dashboard sorted into groups |
+
+Both use the same hardware section and secrets (the full one needs no extra secrets).
+
+### 4. Create a cabin temperature sensor in HA (optional)
+
+The component works without a temperature sensor — the heater then regulates on its own intake sensor (`room_sensor: heater`, the default). To regulate on your cabin instead (`room_sensor: controller`), create a template sensor in HA that averages your cabin sensors:
 
 ```yaml
 template:
@@ -111,9 +120,9 @@ The `espar_can` component:
 2. Sends continuous command frames (0x54/55/56/57 at 200ms, 0x60D heartbeat at 100ms)
 3. Monitors 0x2C4 for heater state and 0x625 for connection health
 4. Exposes a `climate` entity to Home Assistant with HEAT / FAN_ONLY / OFF modes
-5. Uses the averaged cabin temperature from your HA sensor to make thermostat decisions — heat when below `(target - 1.0°C)`, idle/fan when at or above target
+5. In HEAT, sends the climate target as the heater's setpoint together with a room temperature; the heater starts, modulates, pauses and restarts by itself (see [Regulation](#regulation))
 
-The heater hardware always receives a fixed high setpoint (default 85°F, configurable). The component's thermostat logic decides when to send HEAT vs IDLE commands based on the cabin sensor. The heater's internal thermocouple acts only as a safety ceiling.
+The component makes no on/off decisions in HEAT — like the OEM EasyStart Pro, it only tells the heater what the target and the room temperature are.
 
 ---
 
@@ -124,21 +133,14 @@ espar_can:
   id: espar
   name: "Espar Heater"                  # required for HA discovery
 
-  heat_setpoint_f: 85.0                 # fixed setpoint sent to heater hardware (°F)
-                                        # range 70–95; default 85.0
-                                        # our thermostat (cabin avg vs HA target) controls
-                                        # on/off — the heater's thermocouple is just a safety ceiling
-
   cabin_temp_unit: celsius              # "celsius" (default) or "fahrenheit"
                                         # set to "fahrenheit" if your HA sensor reports °F;
                                         # the component converts internally — no lambda filter needed
 
-  pause_mode: off                       # "off" (default) or "fan"
-                                        # "off"  — send IDLE on setpoint reached; full ~4-min cooldown each cycle
-                                        # "fan"  — send FAN_ONLY instead; blower runs without combustion
-                                        #           (pseudo-pause, ~4W continuous); avoids repeated full stop/starts
-
-  current_temperature_sensor: cabin_avg_temp   # optional; heats continuously if omitted
+  room_sensor: heater                   # the room temperature the heater regulates on — see "Regulation"
+                                        # "heater" (default, its own intake sensor)
+                                        # or "controller" (current_temperature_sensor)
+  current_temperature_sensor: cabin_avg_temp   # optional; only used with room_sensor: controller
 
   auto_clear_idle_lock: true            # default true. After a heater power interruption the heater
                                         # often sits in IDLE with fault byte D3=0x04 and ignores
@@ -149,14 +151,6 @@ espar_can:
   init_0x62_byte: 0xF1                  # optional; last byte of init frame 0x62 (default shown)
                                         # The heater accepted every value tested; leave as-is unless
                                         # you're doing multi-controller experiments.
-
-  # Anti-short-cycle (issue #9) — all disabled by default. They gate only the
-  # thermostat's own on/off decisions; HA mode/setpoint changes act immediately.
-  hysteresis: 1.0                       # optional; dead-band below target before restarting,
-                                        # in cabin_temp_unit degrees (default 0.3 °C ≈ 0.5 °F)
-  min_run_time: 15min                   # optional; once lit, keep heating at least this long (default 0)
-  min_off_time: 10min                   # optional; after a stop, wait at least this long (default 0)
-  max_starts_per_hour: 3                # optional; cap on thermostat starts per rolling hour (default 0 = off)
 
   heater_state:                         # optional text sensor: STARTUP/IDLE/HEATING/FAN/COOLDOWN/UNKNOWN
     name: "Espar Heater State"
@@ -204,7 +198,7 @@ The heater answers diagnostic requests on the CAN bus (UDS on 0x7A0 → 0x73C, t
 - The fault memory is read on connect, when the heater reports a fault, and after each run. To read it on demand: `- lambda: id(espar).read_fault_memory();`
 - An identifier the heater rejects is not asked again.
 
-Tested on an Airtronic S3 B2L (gasoline, software 02.03.11) in idle, fan, heating and cooldown. Identifiers, scalings and what is confirmed: [docs/uds-diagnostics.md](../docs/uds-diagnostics.md).
+Tested on an Airtronic S3 B2L (gasoline, software 02.03.11) in idle, fan, heating and cooldown. Identifiers, scalings and what is confirmed: [docs/uds-diagnostics.md](../docs/uds-diagnostics.md). Every entity ready to use: `espar-heater-full.yaml`.
 
 ```yaml
 espar_can:
@@ -262,11 +256,49 @@ All diagnostic entities (each optional):
 
 ---
 
+## Regulation
+
+The heater regulates by itself, as it does with the OEM EasyStart Pro: in HEAT the component sends HEAT continuously with the **climate target as the setpoint** and a **room temperature**, and the heater decides when to burn, how hard, and when to pause. The component makes no on/off decisions — so there is no short-cycling (#9): no full cooldown and new glow-plug ignition every time the cabin reaches the target.
+
+| | |
+|---|---|
+| Setpoint sent (0x54 D3/D4) | the climate entity's target, °C × 10 |
+| Room temperature sent (0x54 D5/D6, 0x65 D1/D2) | a real room temperature, (°C + 50) × 10 — see `room_sensor` |
+| Who switches | the heater: starts, modulates (power demand 100 → 0 %), pauses, restarts |
+
+> **Removed:** the component's own thermostat (`regulation: thermostat`) and its options `heat_setpoint_f`, `pause_mode`, `hysteresis`, `min_run_time`, `min_off_time`, `max_starts_per_hour`. A config that still has one of them fails validation with a message saying so — delete the option.
+
+Where the room temperature comes from (`room_sensor`):
+
+| `room_sensor` | Room temperature sent to the heater |
+|---|---|
+| `heater` (default) | The heater's own intake sensor, read over UDS (FD01, read-only) minus 3.0 K — the same correction the heater applies to its own value. Works without a `diagnostics:` block. |
+| `controller` | `current_temperature_sensor`, sent as the control unit's sensor (like the Pro's built-in sensor). Needs `current_temperature_sensor`; without it the heater's sensor is used. |
+
+It can be switched at run time, e.g. from a template select (as in `espar-heater-full.yaml`):
+
+```yaml
+select:
+  - platform: template
+    name: "Espar Room Sensor"
+    optimistic: true
+    restore_value: true
+    options: ["Heater", "External"]
+    on_value:
+      - lambda: id(espar).set_room_sensor_controller(x == "External");
+```
+
+What to expect (Airtronic S3 B2L): with the setpoint below the room temperature the heater runs its blower for ~15 s, then goes into its **control pause** (no flame, blower off). Raising the setpoint makes it ignite by itself; lowering it while burning reduces the power demand. The heater's control is PI-like: a 1 K setpoint step moves the power demand by ~10 % at once, then it keeps drifting by ~0.5 % per 10 s and kelvin of error — up while below the setpoint, down while above, standing still at the setpoint. Above the setpoint while burning it runs down to 0 % demand and then stays at minimum output (fuel pump ~2.1 Hz) rather than pausing, as long as the room doesn't keep warming (55 min run, room 2–3 K above the setpoint for 16 min, no pause). The climate action shows *Idle* during the pause (detected via FD10 phase `0x28`), although 0x2C4 still reports HEATING — *Espar Heating* stays on meanwhile. The heater does not limit its own run time; use a timer or automation if you need one. Background and measurements: [docs/experiments/heater-regulation.md](../docs/experiments/heater-regulation.md).
+
+> Don't try to make the heater use its own sensor by sending "no value" (`FE FF`) with sensor selection `00`: it then regulates on 0.0 °C and keeps heating. The component always sends a real value.
+
+---
+
 ## Climate entity behavior
 
 | HA Mode | Command sent | Heater behavior |
 |---|---|---|
-| HEAT | HEAT at 85°F (configurable) when cabin < setpoint; IDLE or FAN_ONLY when above (see `pause_mode`) | Runs until cabin reaches setpoint |
+| HEAT | HEAT continuously with the target as setpoint and a room temperature | Heater modulates, pauses and restarts by itself |
 | FAN ONLY | FAN command always | Blower runs, no combustion; ~75s cooldown after turning off |
 | OFF | IDLE command always | Heater off |
 
@@ -344,7 +376,7 @@ The diagnostic `flag_0x20` sensor ("Espar Status Flag 0x20") is new and only app
 
 **Heater won't start heating even with mode set to HEAT**
 
-The most likely cause is a temperature unit mismatch. The component's thermostat logic operates in Celsius internally. If your HA cabin temperature sensor reports in Fahrenheit and `cabin_temp_unit` is not set to `fahrenheit`, the raw value flows in as-is — so `44.9°F` is treated as `44.9°C` (113°F), which is already above any reasonable setpoint, and the thermostat never commands heat.
+First check whether the room is already warmer than the target: the heater then goes into its control pause (climate action *Idle*, phase `Control pause`) — that's correct. With `room_sensor: controller` the other likely cause is a temperature unit mismatch. The component works in Celsius internally. If your HA cabin temperature sensor reports in Fahrenheit and `cabin_temp_unit` is not set to `fahrenheit`, the raw value flows in as-is — so `44.9°F` is sent as `44.9°C` (113°F), which is already above any reasonable setpoint, and the heater pauses.
 
 Check your ESPHome logs for a line like:
 ```

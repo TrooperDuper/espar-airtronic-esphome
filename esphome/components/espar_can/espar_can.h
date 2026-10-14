@@ -31,8 +31,10 @@
 //                     reset or cleared. See docs/uds-diagnostics.md.
 //
 //  Climate entity:
-//    Mode HEAT     → thermostat: send HEAT:heat_setpoint_f when below target,
-//                                send IDLE when above target (+hysteresis)
+//    Mode HEAT     → send HEAT continuously with the climate target as setpoint
+//                    and a room temperature in 0x54 D5/D6; the heater starts,
+//                    modulates, pauses and restarts by itself (like the OEM
+//                    EasyStart Pro). The component makes no on/off decisions.
 //    Mode FAN_ONLY → always send FAN command
 //    Mode OFF      → always send IDLE command
 //
@@ -78,10 +80,7 @@ static constexpr uint8_t  STATUS_BURST_COUNT      =     4;
 // ── Safety thresholds ────────────────────────────────────────────────────
 static constexpr uint32_t HEARTBEAT_TIMEOUT_MS  = 10000;  // loss of 0x625 (heater occasionally gaps >5s)
 static constexpr uint32_t STARTUP_TIMEOUT_MS    = 90000;  // stuck in STARTUP state
-static constexpr uint32_t HEAT_CONFIRM_MS       = 30000;  // HEAT cmd but no HEATING state
 static constexpr uint8_t  MAX_FAILED_STARTS     =    10;  // → lockout
-static constexpr float    HYSTERESIS_C          =  0.3f;  // default thermostat dead-band
-static constexpr uint32_t THERMO_EVAL_MS        =  5000;  // periodic re-evaluation (anti-short-cycle timers)
 static constexpr uint32_t FOREIGN_CTRL_TIMEOUT_MS = 5000; // other controller considered gone after this
 // Timings mimic the manual sequence that released the lock every time:
 // FAN held ≥5 s, then IDLE. Short early pulses (600 ms, ~2 s after power-up)
@@ -105,6 +104,13 @@ static constexpr size_t   DIAG_BUF_SIZE          =    64;  // longest polled ans
 static constexpr uint8_t  UDS_READ_DATA          =  0x22;  // ReadDataByIdentifier
 static constexpr uint8_t  UDS_READ_DTC           =  0x19;  // ReadDTCInformation
 static constexpr uint16_t BLOWER_LEVEL_OFFSET    = 20000;  // FD08 reads 20000 with the blower stopped
+
+// ── Regulation (the heater regulates) ────────────────────────────────────
+// The heater's own room temperature (0x2C4 D5/D6 while idle) is its intake air
+// sensor (FD01 word 2) minus 3.0 K: 20.5 → 17.5, 15.6 → 12.6, 14.1 → 11.2 °C.
+static constexpr float    INTAKE_TO_ROOM_OFFSET_K = 3.0f;
+static constexpr uint32_t INTAKE_MAX_AGE_MS       = 120000;  // older readings are not used
+static constexpr uint8_t  PHASE_CONTROL_PAUSE     = 0x28;    // FD10 byte 1
 
 // Requests of one sweep, in order (flame first — it is the time-critical one)
 enum DiagItem : uint8_t {
@@ -154,16 +160,14 @@ class EsparCanComponent : public climate::Climate, public Component {
   void control(const climate::ClimateCall &call) override;
 
   // ── Setters called from generated __init__.py code ────────────────────
-  void set_heat_setpoint_f(float f)                         { heat_setpoint_f_ = f; }
   void set_cabin_temp_fahrenheit(bool f)                    { cabin_temp_fahrenheit_ = f; }
-  void set_pause_mode_fan(bool f)                           { pause_mode_fan_ = f; }
   void set_auto_clear_idle_lock(bool b)                     { auto_clear_idle_lock_ = b; }
-  // Anti-short-cycle (issue #9). Times in seconds; 0 disables each limit.
-  void set_hysteresis_c(float h)                            { hysteresis_c_ = h; }
-  void set_min_run_time_s(uint32_t s)                       { min_run_ms_ = s * 1000UL; }
-  void set_min_off_time_s(uint32_t s)                       { min_off_ms_ = s * 1000UL; }
-  void set_max_starts_per_hour(uint8_t n)                   { max_starts_per_hour_ = n; }
   void set_tx_standby(bool s);
+  // Which room temperature the heater regulates on. Can be changed at run time,
+  // e.g. from a template select:  - lambda: id(espar).set_room_sensor_controller(x == "External");
+  //   false — its own sensor (intake air read over UDS, minus the heater's 3 K)
+  //   true  — current_temperature_sensor, sent as the control unit's sensor
+  void set_room_sensor_controller(bool f);
   // Controller identity: 24-bit ID sent in 0x60D D3–D5, and the
   // last byte of init frame 0x62. Changing either at runtime re-runs the init
   // handshake (same path as leaving CAN standby).
@@ -241,9 +245,12 @@ class EsparCanComponent : public climate::Climate, public Component {
   void diag_process_response_(const uint8_t *data, uint16_t len);
   // Starting, heating, fan or cooldown — anything but plain IDLE
   bool heater_active_() const { return heater_d1_state_ != HEATER_STATE_IDLE || cooldown_; }
+  // Diagnostics block configured, or the heater's own sensor is needed for regulation
+  bool diag_active_() const { return diag_enabled_ || needs_intake_(); }
+  bool needs_intake_() const { return !room_from_controller_(); }
 
-  // ── Thermostat logic ─────────────────────────────────────────────────
-  void evaluate_thermostat_();
+  // ── Climate mode → command ───────────────────────────────────────────
+  void apply_climate_mode_();
   void apply_mode_(bool heat, bool fan);
   void update_climate_action_();
 
@@ -251,11 +258,13 @@ class EsparCanComponent : public climate::Climate, public Component {
   void publish_fault_(const std::string &msg);
 
   // ── Temp conversion ───────────────────────────────────────────────────
-  // Espar CAN temp word: round((°F - 32) * 50 / 9)
-  // Verified: 66°F→0x00BD  75°F→0x00EF  78°F→0x0100  80°F→0x010B
-  static uint16_t fahrenheit_to_can(float f) {
-    return static_cast<uint16_t>((f - 32.0f) * 50.0f / 9.0f + 0.5f);
-  }
+  // Setpoint word for 0x54 D3/D4: °C × 10
+  uint16_t setpoint_word_() const;
+  // Room temperature word for 0x54 D5/D6 and 0x65 D1/D2: (°C + 50) × 10
+  uint16_t room_word_() const;
+  // The heater's own room temperature, °C; NAN without a usable reading
+  float own_room_temperature_() const;
+  void publish_room_temperature_();
 
   // ── Sensors ───────────────────────────────────────────────────────────
   text_sensor::TextSensor    *heater_state_sensor_{nullptr};
@@ -296,44 +305,29 @@ class EsparCanComponent : public climate::Climate, public Component {
   text_sensor::TextSensor     *fault_memory_sensor_{nullptr};
 
   // ── Config ────────────────────────────────────────────────────────────
-  // Fixed high setpoint (°F) sent to heater hardware when our thermostat
-  // decides to heat.  Our logic controls on/off; the heater's internal
-  // thermocouple just acts as a safety ceiling.
-  float heat_setpoint_f_{85.0f};
   // When true, the cabin temperature sensor value is in °F and will be
-  // converted to °C internally before the thermostat comparison.
+  // converted to °C internally.
   bool  cabin_temp_fahrenheit_{false};
-  // When true, send FAN_ONLY instead of IDLE when cabin reaches setpoint.
-  // Avoids repeated full stop/start cycles; blower runs ~4W continuous.
-  bool  pause_mode_fan_{false};
   // When true, all outbound CAN frames are suppressed (TX standby).
   // Use when a real EasyStart Pro is on the bus: the WeAct emulates the Pro's
   // CAN IDs; both transmitting has been seen to trigger P000342.
   bool  tx_standby_{false};
+  // true = report current_temperature_sensor as the control unit's room sensor;
+  // false = hand back the heater's own sensor.
+  bool  room_sensor_controller_{false};
+  bool  room_from_controller_() const { return room_sensor_controller_ && current_temp_sensor_ != nullptr; }
+  float    ext_temp_c_{NAN};          // last current_temperature_sensor value, °C
+  float    intake_temp_c_{NAN};       // FD01 word 2
+  uint32_t t_intake_{0};              // when it was read
+  uint16_t own_room_word_{0xFFFE};    // 0x2C4 D5/D6 while the heater idles and nothing is commanded
+  uint8_t  diag_phase_{0xFF};         // last FD10 byte 1 (0xFF = unknown)
+  uint32_t t_diag_phase_{0};
+  bool     settings_dirty_{false};    // room sensor selection changed: resend the settings frames
+  uint8_t  settings_change_ctr_{0};   // 0x63 D4, counts 1→2→3→1 with every change (0 after power-up)
   // Controller identity. Defaults = the maintainer's EasyStart Pro. The heater
   // accepted any ID tested (incl. made-up and MAC-derived) and doesn't check 0x62 D8.
   uint8_t ctrl_id_[3]{0x82, 0xB6, 0x09};  // 0x60D D3–D5
   uint8_t init_62_last_{0xF1};            // 0x62 D8
-
-  // ── Anti-short-cycle (thermostat-driven transitions only) ─────────────
-  // User mode changes (OFF / FAN / HEAT from HA) and faults always act
-  // immediately; these limits only gate the thermostat's own on/off decisions.
-  float    hysteresis_c_{0.3f};        // dead-band below target before restarting
-  uint32_t min_run_ms_{0};             // keep heating at least this long once started
-  uint32_t min_off_ms_{0};             // wait at least this long after a stop
-  uint8_t  max_starts_per_hour_{0};    // cap on thermostat-initiated starts
-  static constexpr uint8_t START_LOG_LEN = 12;
-  uint32_t start_log_[START_LOG_LEN]{};  // millis() of recent thermostat starts (ring)
-  uint8_t  start_log_idx_{0};
-  uint32_t heat_on_ms_{0};             // when the current HEAT command began
-  uint32_t heat_off_ms_{0};            // when the last HEAT command ended
-  bool     heat_off_valid_{false};
-  bool     user_mode_change_{false};   // next evaluation follows a user mode/setpoint change
-  uint8_t  ascs_hold_reason_{0};       // last logged gating reason (0=none)
-  uint32_t t_thermo_eval_{0};
-  uint8_t  starts_last_hour_(uint32_t now) const;
-  void     record_start_(uint32_t now);
-  void     log_ascs_hold_(uint8_t reason, uint32_t wait_ms);
 
   // ── Other controller on the bus (e.g. a real EasyStart Pro) ───────────
   bool     foreign_ctrl_present_{false};
@@ -347,7 +341,6 @@ class EsparCanComponent : public climate::Climate, public Component {
   void restart_handshake_();
 
   // ── CAN state ────────────────────────────────────────────────────────
-  uint16_t heater_ctr_{0xFFFE};        // 0x2C4 D5/D6 value echoed in our 0x54 (likely a temperature; was called "counter")
   uint8_t  heater_d1_state_{0};
   uint8_t  heater_fault_code_{0};      // 0x2C4 D3: 0x00=ok, 0x20=flame loss, 0x40=overtemp
   bool     flame_active_{false};
@@ -395,7 +388,6 @@ class EsparCanComponent : public climate::Climate, public Component {
   uint8_t  failed_start_count_{0};
   bool     locked_out_{false};
   bool     waiting_heat_confirm_{false};
-  uint32_t heat_cmd_ms_{0};          // when we last transitioned to cmd_heating=true
 
   // ── UDS diagnostics ───────────────────────────────────────────────────
   bool     diag_enabled_{false};      // `diagnostics:` block present
