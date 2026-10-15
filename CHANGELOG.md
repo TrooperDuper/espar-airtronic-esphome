@@ -8,9 +8,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### ⚠️ Breaking — the heater regulates (#9)
+- **The heater regulates itself, always:** in HEAT the climate target goes to the heater as its setpoint together with a real room temperature in 0x54 D5/D6 ((°C + 50) × 10), and the heater starts, modulates, pauses and restarts by itself, like with the OEM EasyStart Pro. The component no longer switches the heater on and off, so there is no short-cycling (no full cooldown and new glow-plug ignition at every setpoint crossing). Tested on an Airtronic S3 B2L, incl. a 55 min run (docs/experiments/heater-regulation.md).
+- **Removed:** the component's own thermostat and its options `heat_setpoint_f`, `pause_mode`, `hysteresis`, `min_run_time`, `min_off_time`, `max_starts_per_hour` (the last four were added after #14 and never released). A config that still sets one of them fails validation with a message saying so — delete the option. The heat-confirm timeout is gone too: in its control pause the heater rightly doesn't heat.
+- **`room_sensor`**: `heater` (default — the heater's own intake sensor, read over UDS, minus its 3.0 K correction; works without a `diagnostics:` block) or `controller` (`current_temperature_sensor`, the former thermostat input). Switchable at run time with `set_room_sensor_controller()`; a change re-sends the settings frames with the 0x63 change counter, as the OEM controller does.
+- **`esphome/espar-heater-full.yaml`**: a second example config with a select to switch the room sensor at run time, every diagnostic entity, a *Max Run Time* safety limit (number entity, default 120 min) and the web dashboard sorted into groups. `espar-heater.yaml` stays the minimal example.
+- The climate action shows *Idle* during the heater's control pause (FD10 phase `0x28`), where 0x2C4 still reports HEATING.
+
+### Added — heater diagnostics
+- **Optional, read-only diagnostics over UDS** (0x7A0 → 0x73C): a new `diagnostics:` block on `espar_can`. Off unless the block is present. Only ReadDataByIdentifier and ReadDTCInformation (`19 02 08`) are sent; nothing is written, reset or cleared, and nothing is sent in CAN Standby or while the heater isn't connected. Entities include real flame detection, combustion phase, flame and intake temperature, supply voltage, fuel pump frequency, glow plug, fuel rate and lifetime fuel, the heater's operating-hour counters, versions/part number and the **fault memory with P-codes** (read on connect, on a fault, after each run, or via `read_fault_memory()`). Polled every `update_interval` (default 10 s) while the heater is active, once a minute while idle. See *Heater diagnostics* in `esphome/README.md` and `docs/uds-diagnostics.md`.
+- Diagnostic answers on 0x73C and another tester's requests on 0x7A0 are no longer reported as unknown IDs.
+
 ### Added (after #14)
 - **COOLDOWN heater state:** D1=IDLE with D2 bit 3 and no fault code = after-run blower. *Espar Heater State* shows `COOLDOWN` and the climate action shows *Fan* until it's truly idle. The example YAML adds a dim-orange LED colour.
-- **Anti-short-cycle options (#9):** `hysteresis`, `min_run_time`, `min_off_time`, `max_starts_per_hour`. All off by default. They gate only thermostat-driven starts and stops; HA mode/setpoint changes and faults act immediately. The thermostat is re-evaluated every 5 s so timers expire on their own.
 - **Other controller on the bus:** another controller's 0x60D or 0x54–0x57 frames while the WeAct is transmitting set *Espar Fault* = `OTHER CONTROLLER ON BUS — enable CAN Standby` (cleared when it disappears or Standby is turned on). 0x60D, 0x65 and the init-burst IDs are now treated like 0x54–0x57: logged at debug, not raised as unknown-ID faults.
 - Other-controller detection is re-armed when CAN Standby is turned off, so a Pro left on the bus raises the fault instead of being silently ignored.
 - An unmapped 0x2C4 state (shown as `UNKNOWN`) now logs its raw D1–D4 bytes at WARN, so it can be identified.
