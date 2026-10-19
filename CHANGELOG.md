@@ -8,6 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed (docs)
+- **P000342 is "invalid configuration: too many CAN units"**, per Eberspächer's Hydronic S3 repair instructions (via [@farnham26](https://github.com/farnham26)). This refines the earlier entry below: ADR is the dangerous-goods mode, not a bus address, and the fault means more than one control unit on the bus. One controller at a time (on a Hydronic, the EasyStart answered another controller's frames with "off").
+
 ### Added (after #14)
 - **COOLDOWN heater state:** D1=IDLE with D2 bit 3 and no fault code = after-run blower. *Espar Heater State* shows `COOLDOWN` and the climate action shows *Fan* until it's truly idle. The example YAML adds a dim-orange LED colour.
 - **Anti-short-cycle options (#9):** `hysteresis`, `min_run_time`, `min_off_time`, `max_starts_per_hour`. All off by default. They gate only thermostat-driven starts and stops; HA mode/setpoint changes and faults act immediately. The thermostat is re-evaluated every 5 s so timers expire on their own.
