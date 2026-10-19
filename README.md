@@ -128,7 +128,7 @@ This project is better for the people who've shared captures, hardware and resea
 
 - **[@rhd944dot1](https://github.com/rhd944dot1):** a second Airtronic S3 B2L near sea level for captures and comparison, real EasyStart Pro data for the controller-ID work, and checking the diagnostics on the Airtronic: which identifiers apply, and what they read in each operating state.
 - **[@farnham26](https://github.com/farnham26):** his Hydronic S3 research ([esphome-s3-hydronic-cs](https://github.com/farnham26/esphome-s3-hydronic-cs)) documented the diagnostic addresses (0x7A0 → 0x73C), identifiers and scalings, most of which carry over to the Airtronic.
-- **Greg** ([@gregoryxxxxxx](https://github.com/gregoryxxxxxx)): spotted that P000342's "ADR" is Eberspächer's dangerous-goods mode, not a bus address, and shared M3 B4L findings (PAUSE and AFTER-RUN states, the 0x2C6 model ID, heater-side regulation).
+- **Greg** ([@gregoryxxxxxx](https://github.com/gregoryxxxxxx)): spotted that P000342's "ADR" is Eberspächer's dangerous-goods mode, not a bus address, and shared Airtronic M2 findings (PAUSE and AFTER-RUN states, the 0x2C6 model ID, heater-side regulation).
 
 ---
 
