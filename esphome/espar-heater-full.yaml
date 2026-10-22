@@ -1,0 +1,457 @@
+# =============================================================================
+#  Espar Airtronic S3 CAN Controller — FULL example
+#  Every diagnostic entity, grouped web dashboard.
+#  The minimal example is espar-heater.yaml; this file adds:
+#    - a select to switch the room sensor at run time
+#    - all read-only diagnostic entities (diagnostics: block)
+#    - "Max Run Time" as a number entity (the limit itself is in the component)
+#    - web_server v3 with sorting groups
+#  See esphome/README.md: "Regulation", "Heater diagnostics".
+#
+#  Hardware:
+#    CAN TX: GPIO27    CAN RX: GPIO26    500 kbps
+#    XB10 Pin 7 (GYBU) = CAN H
+#    XB10 Pin 8 (GNYE) = CAN L
+#    XB10 Pin 2 (BRBK) = Ground reference
+#    Onboard 120Ω termination switch K3 — leave OFF when tapping mid-bus
+#
+#  Climate entity behaviour:
+#    HEAT mode  — sends HEAT continuously with the climate target as setpoint
+#                 and a room temperature; the heater starts, modulates,
+#                 pauses (no flame) and restarts by itself.
+#    FAN ONLY   — sends FAN command; heater runs blower, no combustion.
+#    OFF        — sends IDLE command.
+#
+#  Room temperature (select "Espar Room Sensor"):
+#    "Heater"   — the heater's own intake sensor (read over UDS), default
+#    "External" — the cabin sensor below (cabin_avg_temp)
+# =============================================================================
+
+esphome:
+  name: espar-heater
+  friendly_name: Espar Heater
+  on_boot:
+    priority: -100
+    then:
+      # Apply the stored choice of the select after boot
+      - lambda: |-
+          id(espar).set_room_sensor_controller(id(sel_room_sensor).active_index().value_or(0) == 1);
+      - light.turn_on:
+          id: status_led
+          red: 0%
+          green: 5%
+          blue: 0%
+          brightness: 20%
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+# ── Network ──────────────────────────────────────────────────────────────────
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Espar-Heater Fallback Hotspot"
+    password: !secret fallback_hotspot_password
+
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+# Use DEBUG during development to see CAN frame activity.
+# Switch to INFO for production to reduce log noise.
+logger:
+  level: DEBUG
+
+# ── External component ────────────────────────────────────────────────────────
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [espar_can]
+
+# ── Captive Portal ────────────────────────────────────────────────────────
+
+captive_portal:
+
+# ── Sensors ───────────────────────────────────────────────────────────────────
+sensor:
+  # Cabin averaged temperature pulled from HA via API.
+  # Update entity_id to match the template sensor you create in HA.
+  - platform: homeassistant
+    id: cabin_avg_temp
+    entity_id: sensor.cabin_average_temperature   # ← update to your HA sensor
+    unit_of_measurement: "°F"
+    # No filter_out: nan — "unavailable" must reach the component, which then
+    # regulates on the heater's own sensor instead of an old value.
+    # No °F→°C lambda needed — cabin_temp_unit: fahrenheit handles conversion
+    # internally in the component.
+
+  # WiFi signal — useful for placement decisions in the Trooper
+  - platform: wifi_signal
+    name: "Espar Node WiFi Signal"
+    update_interval: 60s
+    web_server: {sorting_group_id: grp_diag, sorting_weight: 20}
+
+# ── Espar CAN controller ──────────────────────────────────────────────────────
+espar_can:
+  id: espar
+  name: "Espar Heater"
+  web_server: {sorting_group_id: grp_control, sorting_weight: 1}
+
+  # Unit of the cabin temperature sensor above.
+  cabin_temp_unit: fahrenheit
+
+  # Room temperature the heater regulates on. This is the default after
+  # flashing; the select below switches it at run time (survives a reboot).
+  room_sensor: heater
+
+  # Cabin sensor: sent to the heater when Room Sensor = "External".
+  current_temperature_sensor: cabin_avg_temp
+
+  # ── Heater status sensors ──────────────────────────────────────────────
+  heater_state:
+    name: "Espar Heater State"
+    web_server: {sorting_group_id: grp_state, sorting_weight: 1}
+    id: espar_heater_state
+    icon: mdi:fire
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: 'return x == "HEATING";'
+            then:
+              - light.turn_on:
+                  id: status_led
+                  red: 100%
+                  green: 30%
+                  blue: 0%
+                  brightness: 50%
+                  effect: "None"
+        - if:
+            condition:
+              lambda: 'return x == "FAN";'
+            then:
+              - light.turn_on:
+                  id: status_led
+                  red: 0%
+                  green: 0%
+                  blue: 100%
+                  brightness: 30%
+                  effect: "None"
+        - if:
+            condition:
+              lambda: 'return x == "IDLE";'
+            then:
+              - light.turn_on:
+                  id: status_led
+                  red: 0%
+                  green: 100%
+                  blue: 0%
+                  brightness: 15%
+                  effect: "None"
+        - if:
+            condition:
+              lambda: 'return x == "COOLDOWN";'
+            then:
+              - light.turn_on:
+                  id: status_led
+                  red: 100%
+                  green: 10%
+                  blue: 0%
+                  brightness: 20%
+                  effect: "None"
+
+  # True while the heater reports HEATING (0x2C4 D1=0x09) — includes the
+  # ignition ramp, so it turns on before combustion is established.
+  # YAML key stays `flame_active` for compatibility; entity was renamed from
+  # "Espar Flame Active" — see "Upgrading" in esphome/README.md.
+  flame_active:
+    name: "Espar Heating"
+    web_server: {sorting_group_id: grp_state, sorting_weight: 3}
+    id: espar_flame_active
+    device_class: running   # HA shows "Running / Not running" (heat would show "Hot / Normal")
+
+  # Raw 0x2C4 D2 bit5. Previously used as "flame"; it doesn't appear on every
+  # heater. Kept as a diagnostic so more data builds up across units/altitudes.
+  flag_0x20:
+    name: "Espar Status Flag 0x20"
+    web_server: {sorting_group_id: grp_diag, sorting_weight: 10}
+    id: espar_flag_0x20
+
+  heater_connected:
+    name: "Espar Connected"
+    web_server: {sorting_group_id: grp_state, sorting_weight: 4}
+    id: espar_connected
+    device_class: connectivity
+
+  fault_text:
+    name: "Espar Fault"
+    web_server: {sorting_group_id: grp_state, sorting_weight: 5}
+    id: espar_fault
+    icon: mdi:alert-circle-outline
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: 'return x != "OK";'
+            then:
+              - light.turn_on:
+                  id: status_led
+                  red: 100%
+                  green: 0%
+                  blue: 0%
+                  effect: "Fast Pulse"
+            else:
+              - light.turn_on:
+                  id: status_led
+                  red: 0%
+                  green: 5%
+                  blue: 0%
+                  brightness: 10%
+                  effect: "None"
+
+  # ── Heater diagnostics (read-only, UDS 0x7A0 → 0x73C) ────────────────
+  # Nothing is written, reset or cleared; nothing is sent in CAN Standby.
+  diagnostics:
+    update_interval: 10s        # while active; once a minute while idle
+    # State
+    combustion_phase:
+      name: "Espar Phase"
+      icon: mdi:fire-circle
+      web_server: {sorting_group_id: grp_state, sorting_weight: 2}
+    flame_detected:
+      name: "Espar Flame"
+      web_server: {sorting_group_id: grp_combustion, sorting_weight: 1}
+    phase_step:
+      name: "Espar Phase Step"
+      web_server: {sorting_group_id: grp_combustion, sorting_weight: 7}
+    phase_time:
+      name: "Espar Phase Time"
+      web_server: {sorting_group_id: grp_combustion, sorting_weight: 8}
+    # Regulation — what the heater itself is working with
+    heater_setpoint:
+      name: "Espar Heater Setpoint"
+      web_server: {sorting_group_id: grp_regulation, sorting_weight: 1}
+    heater_temperature:
+      name: "Espar Heater Temperature"
+      web_server: {sorting_group_id: grp_regulation, sorting_weight: 2}
+    intake_temperature:
+      name: "Espar Intake Temperature"
+      web_server: {sorting_group_id: grp_regulation, sorting_weight: 3}
+    power_demand:
+      name: "Espar Power Demand"
+      icon: mdi:gauge
+      web_server: {sorting_group_id: grp_regulation, sorting_weight: 4}
+    burn_time:
+      name: "Espar Burn Time"
+      icon: mdi:timer-outline
+      web_server: {sorting_group_id: grp_regulation, sorting_weight: 5}
+    # Combustion
+    combustion_state:
+      name: "Espar Combustion State"
+      web_server: {sorting_group_id: grp_combustion, sorting_weight: 2}
+    flame_temperature:
+      name: "Espar Flame Temperature"
+      web_server: {sorting_group_id: grp_combustion, sorting_weight: 3}
+    glow_plug:
+      name: "Espar Glow Plug"
+      web_server: {sorting_group_id: grp_combustion, sorting_weight: 4}
+    glow_plug_power:
+      name: "Espar Glow Plug Power"
+      web_server: {sorting_group_id: grp_combustion, sorting_weight: 5}
+    # Fuel
+    fuel_rate:
+      name: "Espar Fuel Rate"
+      icon: mdi:gas-station
+      web_server: {sorting_group_id: grp_fuel, sorting_weight: 1}
+    fuel_pump_frequency:
+      name: "Espar Fuel Pump"
+      icon: mdi:pump
+      web_server: {sorting_group_id: grp_fuel, sorting_weight: 2}
+    fuel_total:
+      name: "Espar Fuel Total"
+      icon: mdi:gas-station-outline
+      web_server: {sorting_group_id: grp_fuel, sorting_weight: 3}
+    fuel_pump_strokes:
+      name: "Espar Fuel Pump Strokes"
+      icon: mdi:counter
+      web_server: {sorting_group_id: grp_fuel, sorting_weight: 4}
+    # Electrics and blower
+    supply_voltage:
+      name: "Espar Supply Voltage"
+      web_server: {sorting_group_id: grp_electrics, sorting_weight: 1}
+    blower_level:
+      name: "Espar Blower Level"
+      icon: mdi:fan
+      web_server: {sorting_group_id: grp_electrics, sorting_weight: 2}
+    control_unit_temperature:
+      name: "Espar Control Unit Temperature"
+      web_server: {sorting_group_id: grp_electrics, sorting_weight: 3}
+    air_pressure:
+      name: "Espar Air Pressure"
+      web_server: {sorting_group_id: grp_electrics, sorting_weight: 4}
+    # Counters (the heater's own)
+    operating_hours:
+      name: "Espar Operating Hours"
+      web_server: {sorting_group_id: grp_counters, sorting_weight: 1}
+    hours_power_0_25:
+      name: "Espar Hours 0-25 %"
+      web_server: {sorting_group_id: grp_counters, sorting_weight: 2}
+    hours_power_25_50:
+      name: "Espar Hours 25-50 %"
+      web_server: {sorting_group_id: grp_counters, sorting_weight: 3}
+    hours_power_50_75:
+      name: "Espar Hours 50-75 %"
+      web_server: {sorting_group_id: grp_counters, sorting_weight: 4}
+    hours_power_75_100:
+      name: "Espar Hours 75-100 %"
+      web_server: {sorting_group_id: grp_counters, sorting_weight: 5}
+    hours_control_pause:
+      name: "Espar Hours Control Pause"
+      web_server: {sorting_group_id: grp_counters, sorting_weight: 6}
+    hours_altitude_mode:
+      name: "Espar Hours Altitude Mode"
+      web_server: {sorting_group_id: grp_counters, sorting_weight: 7}
+    start_stop_count:
+      name: "Espar Start/Stop Count"
+      icon: mdi:counter
+      web_server: {sorting_group_id: grp_counters, sorting_weight: 8}
+    # Identification
+    software_version:
+      name: "Espar Software Version"
+      web_server: {sorting_group_id: grp_ident, sorting_weight: 1}
+    hardware_version:
+      name: "Espar Hardware Version"
+      web_server: {sorting_group_id: grp_ident, sorting_weight: 2}
+    part_number:
+      name: "Espar Part Number"
+      web_server: {sorting_group_id: grp_ident, sorting_weight: 3}
+    # Fault memory (read on connect, on a fault, after each run, or via the button)
+    fault_memory:
+      name: "Espar Fault Memory"
+      icon: mdi:alert-box-outline
+      web_server: {sorting_group_id: grp_diag, sorting_weight: 1}
+
+# ── Onboard WS2812 RGB LED (GPIO4) ───────────────────────────────────────────
+# Amber=heating  Blue=fan  Dim green=idle/connected  Red pulse=fault
+light:
+  - platform: esp32_rmt_led_strip
+    name: "Espar Status LED"
+    web_server: {sorting_group_id: grp_control, sorting_weight: 8}
+    id: status_led
+    rgb_order: GRB
+    chipset: WS2812
+    pin: GPIO4
+    num_leds: 1
+    effects:
+      - pulse:
+          name: "Fast Pulse"
+          transition_length: 0.25s
+          update_interval: 0.25s
+
+# ── Diagnostic / housekeeping ─────────────────────────────────────────────────
+binary_sensor:
+  - platform: status
+    name: "Espar Node Status"
+    device_class: connectivity
+    web_server: {sorting_group_id: grp_diag, sorting_weight: 21}
+
+button:
+  - platform: restart
+    name: "Restart Espar Controller"
+    icon: mdi:restart
+    web_server: {sorting_group_id: grp_control, sorting_weight: 9}
+  - platform: template
+    name: "Espar Read Fault Memory"
+    icon: mdi:alert-box-outline
+    web_server: {sorting_group_id: grp_diag, sorting_weight: 2}
+    on_press:
+      - lambda: id(espar).read_fault_memory();
+
+# ── CAN standby switch ────────────────────────────────────────────────────────
+# Suspends all outbound CAN frames without physically unplugging the WeAct.
+# Use before connecting a real EasyStart Pro / OEM diagnostic tool: the WeAct
+# emulates the EasyStart Pro (same CAN IDs); both transmitting has been seen to
+# trigger fault P000342 ("invalid configuration — check ADR coding").
+# Resuming automatically re-runs the CAN handshake.
+switch:
+  - platform: template
+    name: "Espar CAN Standby"
+    id: espar_standby
+    web_server: {sorting_group_id: grp_control, sorting_weight: 5}
+    icon: mdi:pause-circle-outline
+    restore_mode: ALWAYS_OFF
+    optimistic: true
+    turn_on_action:
+      - lambda: id(espar).set_tx_standby(true);
+    turn_off_action:
+      - lambda: id(espar).set_tx_standby(false);
+
+# ── Web dashboard with groups (optional — remove to save ~40 KB flash) ───────
+web_server:
+  port: 80
+  version: 3
+  sorting_groups:
+    - {id: grp_control,    name: "Control",        sorting_weight: 10}
+    - {id: grp_state,      name: "State",          sorting_weight: 20}
+    - {id: grp_regulation, name: "Regulation",     sorting_weight: 30}
+    - {id: grp_combustion, name: "Combustion",     sorting_weight: 40}
+    - {id: grp_fuel,       name: "Fuel",           sorting_weight: 50}
+    - {id: grp_electrics,  name: "Electrics and Blower", sorting_weight: 60}
+    - {id: grp_counters,   name: "Counters",       sorting_weight: 70}
+    - {id: grp_ident,      name: "Identification", sorting_weight: 80}
+    - {id: grp_diag,       name: "Diagnostics",    sorting_weight: 90}
+
+# ── Room sensor, switchable from HA ─────────────────────────────────────────
+select:
+  - platform: template
+    name: "Espar Room Sensor"
+    id: sel_room_sensor
+    icon: mdi:thermometer
+    optimistic: true
+    restore_value: true
+    options:
+      - "Heater"        # the heater's own intake sensor
+      - "External"      # cabin_avg_temp
+    initial_option: "Heater"
+    web_server: {sorting_group_id: grp_control, sorting_weight: 3}
+    on_value:
+      - lambda: id(espar).set_room_sensor_controller(x == "External");
+
+# ── Max run time (safety) ───────────────────────────────────────────────────
+# The heater has no run-time limit of its own. The component switches HEAT or
+# FAN ONLY off after max_run_time (default 120 min), however it was started;
+# this number sets it at run time and survives a reboot. 0 = no limit.
+number:
+  - platform: template
+    name: "Espar Max Run Time"
+    id: max_run_time
+    icon: mdi:timer-lock-outline
+    optimistic: true
+    restore_value: true
+    min_value: 0
+    max_value: 720
+    step: 10
+    initial_value: 120
+    unit_of_measurement: min
+    mode: box
+    web_server: {sorting_group_id: grp_control, sorting_weight: 4}
+    on_value:
+      - lambda: id(espar).set_max_run_time_minutes(x);
+
+# ── Safe mode (rolls back bad OTA after 10 crash-loops) ──────────────────────
+safe_mode:
+
+# ── mDNS ─────────────────────────────────────────────────────────────────────
+mdns:

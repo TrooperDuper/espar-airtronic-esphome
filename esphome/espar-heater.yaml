@@ -10,10 +10,9 @@
 #    Onboard 120Ω termination switch K3 — leave OFF when tapping mid-bus
 #
 #  Climate entity behaviour:
-#    HEAT mode  — sends HEAT:85°F to heater hardware; our thermostat uses the
-#                 averaged cabin sensor to turn the heater on/off around the
-#                 user's target setpoint.  The heater's internal thermocouple
-#                 acts only as a safety ceiling.
+#    HEAT mode  — sends HEAT continuously with the climate target as setpoint
+#                 and a room temperature; the heater starts, modulates, pauses
+#                 and restarts by itself, like with the OEM EasyStart Pro.
 #    FAN ONLY   — sends FAN command; heater runs blower, no combustion.
 #                 Expect ~75s cooldown fan-run after transitioning to OFF.
 #    OFF        — sends IDLE command.
@@ -96,10 +95,10 @@ sensor:
     id: cabin_avg_temp
     entity_id: sensor.cabin_average_temperature   # ← update to your HA sensor
     unit_of_measurement: "°F"
-    filters:
-      - filter_out: nan                            # ignore unavailable readings
-      # No °F→°C lambda needed — cabin_temp_unit: fahrenheit handles conversion
-      # internally in the component.
+    # No filter_out: nan — "unavailable" must reach the component, which then
+    # regulates on the heater's own sensor instead of an old value.
+    # No °F→°C lambda needed — cabin_temp_unit: fahrenheit handles conversion
+    # internally in the component.
 
   # WiFi signal — useful for placement decisions in the Trooper
   - platform: wifi_signal
@@ -111,35 +110,23 @@ espar_can:
   id: espar
   name: "Espar Heater"
 
-  # Fixed setpoint (°F) sent to the heater hardware when our thermostat
-  # decides to heat.  Set high so the heater runs continuously; our logic
-  # (cabin avg vs. HA climate setpoint) is what turns the heater on and off.
-  heat_setpoint_f: 85.0
-
   # Unit of the cabin temperature sensor above.
   # "fahrenheit" — component converts °F→°C internally; no lambda filter needed.
   # "celsius"    — value passed through unchanged (default).
   cabin_temp_unit: fahrenheit
 
-  # Behaviour when the cabin reaches the target setpoint.
-  # "off" — send IDLE; heater does full ~4-min cooldown on every cycle (default).
-  # "fan" — send FAN_ONLY; blower keeps running without combustion (pseudo-pause
-  #          mode, ~4W continuous).  Avoids repeated full stop/start cycles.
-  pause_mode: "off"   # must be quoted — bare off/on are YAML booleans
+  # Which room temperature the heater regulates on (see "Regulation" in README).
+  # "heater"     — its own intake sensor, read over UDS (default).
+  # "controller" — current_temperature_sensor below, e.g. the cabin average.
+  # room_sensor: controller
 
-  # Anti-short-cycle (optional, all off by default — see issue #9).
-  # Limit how often the thermostat starts the heater. User mode/setpoint
-  # changes and faults always act immediately.
-  # hysteresis: 1.0             # degrees below target before restarting
-  #                             # (cabin_temp_unit units; default 0.3 °C ≈ 0.5 °F)
-  # min_run_time: 15min         # once lit, keep heating at least this long
-  # min_off_time: 10min         # after stopping, wait at least this long
-  # max_starts_per_hour: 3      # hard cap on thermostat starts
-
-  # Sensor that provides current cabin temperature to the climate entity.
-  # Remove this line if you have no temperature sensor — the component will
-  # then heat continuously when mode=HEAT (safe; heater's thermocouple limits it).
+  # Cabin temperature sensor. Sent to the heater as the room temperature with
+  # room_sensor: controller; otherwise not needed.
   current_temperature_sensor: cabin_avg_temp
+
+  # The heater has no run-time limit of its own: HEAT or FAN ONLY is switched
+  # off after this time, however it was started. 0min = no limit.
+  max_run_time: 120min
 
   # ── Heater status sensors ──────────────────────────────────────────────
   heater_state:
@@ -237,6 +224,27 @@ espar_can:
                   blue: 0%
                   brightness: 10%
                   effect: "None"
+
+  # ── Heater diagnostics (optional, read-only) ───────────────────────────
+  # Reads values over the heater's diagnostic channel (UDS 0x7A0 → 0x73C).
+  # Off unless this block is present. Nothing is written, reset or cleared.
+  # All keys and what they mean: esphome/README.md, "Heater diagnostics".
+  # diagnostics:
+  #   update_interval: 10s        # while active; once a minute while idle
+  #   flame_detected:
+  #     name: "Espar Flame"
+  #   combustion_phase:
+  #     name: "Espar Phase"
+  #   flame_temperature:
+  #     name: "Espar Flame Temperature"
+  #   supply_voltage:
+  #     name: "Espar Supply Voltage"
+  #   fuel_rate:
+  #     name: "Espar Fuel Rate"
+  #   operating_hours:
+  #     name: "Espar Operating Hours"
+  #   fault_memory:
+  #     name: "Espar Fault Memory"
 
 # ── Onboard WS2812 RGB LED (GPIO4) ───────────────────────────────────────────
 # Amber=heating  Blue=fan  Dim green=idle/connected  Red pulse=fault
