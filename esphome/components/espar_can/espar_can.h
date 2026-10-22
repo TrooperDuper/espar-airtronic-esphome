@@ -37,6 +37,7 @@
 //                    EasyStart Pro). The component makes no on/off decisions.
 //    Mode FAN_ONLY → always send FAN command
 //    Mode OFF      → always send IDLE command
+//    HEAT and FAN_ONLY end after max_run_time (default 120 min, 0 = no limit)
 //
 //  Fault detection (0x2C4 D1=0x0B + D3 fault code — confirmed via RE captures):
 //    - D1=0x0B = FAULT state; D3 holds fault code bits
@@ -110,6 +111,9 @@ static constexpr uint16_t BLOWER_LEVEL_OFFSET    = 20000;  // FD08 reads 20000 w
 // sensor (FD01 word 2) minus 3.0 K: 20.5 → 17.5, 15.6 → 12.6, 14.1 → 11.2 °C.
 static constexpr float    INTAKE_TO_ROOM_OFFSET_K = 3.0f;
 static constexpr uint32_t INTAKE_MAX_AGE_MS       = 120000;  // older readings are not used
+// current_temperature_sensor without an update and without a live HA connection for
+// this long → the heater's own sensor is used (an HA sensor only sends changes)
+static constexpr uint32_t CABIN_TEMP_MAX_AGE_MS   = 300000;
 static constexpr uint8_t  PHASE_CONTROL_PAUSE     = 0x28;    // FD10 byte 1
 
 // Requests of one sweep, in order (flame first — it is the time-critical one)
@@ -166,8 +170,13 @@ class EsparCanComponent : public climate::Climate, public Component {
   // Which room temperature the heater regulates on. Can be changed at run time,
   // e.g. from a template select:  - lambda: id(espar).set_room_sensor_controller(x == "External");
   //   false — its own sensor (intake air read over UDS, minus the heater's 3 K)
-  //   true  — current_temperature_sensor, sent as the control unit's sensor
+  //   true  — current_temperature_sensor, sent as the control unit's sensor; while it
+  //           has no value or is stale, the heater's own sensor is used instead
   void set_room_sensor_controller(bool f);
+  // HEAT or FAN ONLY is switched off after this many minutes, however it was started
+  // (the heater has no limit of its own). 0 = no limit. Can be changed at run time,
+  // e.g. from a template number:  - lambda: id(espar).set_max_run_time_minutes(x);
+  void set_max_run_time_minutes(float minutes);
   // Controller identity: 24-bit ID sent in 0x60D D3–D5, and the
   // last byte of init frame 0x62. Changing either at runtime re-runs the init
   // handshake (same path as leaving CAN standby).
@@ -265,6 +274,9 @@ class EsparCanComponent : public climate::Climate, public Component {
   // The heater's own room temperature, °C; NAN without a usable reading
   float own_room_temperature_() const;
   void publish_room_temperature_();
+  // current_temperature_sensor still usable? Falls back to the heater's sensor if not.
+  void check_cabin_temperature_(uint32_t now);
+  void check_max_run_time_(uint32_t now);
 
   // ── Sensors ───────────────────────────────────────────────────────────
   text_sensor::TextSensor    *heater_state_sensor_{nullptr};
@@ -315,8 +327,13 @@ class EsparCanComponent : public climate::Climate, public Component {
   // true = report current_temperature_sensor as the control unit's room sensor;
   // false = hand back the heater's own sensor.
   bool  room_sensor_controller_{false};
-  bool  room_from_controller_() const { return room_sensor_controller_ && current_temp_sensor_ != nullptr; }
-  float    ext_temp_c_{NAN};          // last current_temperature_sensor value, °C
+  bool  room_from_controller_() const {
+    return room_sensor_controller_ && current_temp_sensor_ != nullptr && ext_temp_ok_;
+  }
+  float    ext_temp_c_{NAN};          // last current_temperature_sensor value, °C (NAN = sensor has none)
+  uint32_t t_ext_temp_{0};            // when it last arrived or was confirmed by a live HA connection
+  bool     ext_temp_ok_{false};       // fresh enough to regulate on
+  bool     ext_temp_fault_published_{false};
   float    intake_temp_c_{NAN};       // FD01 word 2
   uint32_t t_intake_{0};              // when it was read
   uint16_t own_room_word_{0xFFFE};    // 0x2C4 D5/D6 while the heater idles and nothing is commanded
@@ -361,6 +378,11 @@ class EsparCanComponent : public climate::Climate, public Component {
   bool     idle_lock_gave_up_{false};
   uint32_t heater_last_seen_{0};
   bool     driver_installed_{false};
+
+  // ── Max run time ──────────────────────────────────────────────────────
+  uint32_t max_run_time_ms_{120 * 60 * 1000};  // 0 = no limit
+  bool     run_active_{false};                 // climate mode is not OFF
+  uint32_t run_started_ms_{0};                 // when it left OFF
 
   // ── Command state ─────────────────────────────────────────────────────
   bool     cmd_heating_{false};

@@ -5,8 +5,12 @@
 
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
 #include "espar_can.h"
+#include "esphome/core/defines.h"
 #include "esphome/core/log.h"
 #include "esphome/core/hal.h"
+#ifdef USE_API
+#include "esphome/components/api/api_server.h"
+#endif
 #include <cstring>
 #include <cmath>
 #include <string>
@@ -114,6 +118,9 @@ void EsparCanComponent::loop() {
     if (foreign_fault_published_) { foreign_fault_published_ = false; publish_fault_("OK"); }
   }
 
+  // ── Cabin temperature lost or stale → the heater's own sensor ────────
+  check_cabin_temperature_(now);
+
   // ── UDS diagnostics (only with a `diagnostics:` block) ───────────────
   handle_diagnostics_(now);
 
@@ -142,6 +149,9 @@ void EsparCanComponent::loop() {
       }
     }
   }
+
+  // ── Max run time: HEAT / FAN ONLY end after max_run_time ─────────────
+  check_max_run_time_(now);
 
   // ── Keep climate action in sync with actual heater state ──────────────
   update_climate_action_();
@@ -203,18 +213,19 @@ void EsparCanComponent::control(const climate::ClimateCall &call) {
 void EsparCanComponent::set_current_temperature_sensor(sensor::Sensor *s) {
   current_temp_sensor_ = s;
   s->add_on_state_callback([this](float val) {
-    if (!std::isnan(val)) {
-      // ESPHome climate always uses °C internally.
-      // cabin_temp_fahrenheit_ is set true when cabin_temp_unit: fahrenheit in YAML.
-      if (cabin_temp_fahrenheit_)
-        val = (val - 32.0f) * 5.0f / 9.0f;
-      ext_temp_c_ = val;
-      // On the heater's own sensor, the climate entity shows the heater's value
-      // instead (publish_room_temperature_()).
-      if (needs_intake_()) return;
-      this->current_temperature = val;
-      this->publish_state();
-    }
+    // ESPHome climate always uses °C internally.
+    // cabin_temp_fahrenheit_ is set true when cabin_temp_unit: fahrenheit in YAML.
+    if (!std::isnan(val) && cabin_temp_fahrenheit_)
+      val = (val - 32.0f) * 5.0f / 9.0f;
+    // NAN (e.g. the HA entity is unavailable) is kept too: the old value must not
+    // stay in use — check_cabin_temperature_() switches to the heater's sensor.
+    ext_temp_c_ = val;
+    t_ext_temp_ = millis();
+    // On the heater's own sensor, the climate entity shows the heater's value
+    // instead (publish_room_temperature_()).
+    if (std::isnan(val) || needs_intake_()) return;
+    this->current_temperature = val;
+    this->publish_state();
   });
 }
 
@@ -1152,17 +1163,89 @@ void EsparCanComponent::set_room_sensor_controller(bool f) {
   if (!driver_installed_) return;
   if (f && current_temp_sensor_ == nullptr)
     ESP_LOGW(TAG, "Room sensor → controller requested, but no current_temperature_sensor: staying on the heater's sensor");
+  else if (f && !ext_temp_ok_)
+    ESP_LOGW(TAG, "Room sensor → controller, but no current cabin temperature: on the heater's sensor until one arrives");
   else
     ESP_LOGI(TAG, "Room sensor → %s", f ? "controller" : "heater");
+  if (!f && ext_temp_fault_published_) { ext_temp_fault_published_ = false; publish_fault_("OK"); }
   settings_change_ctr_ = settings_change_ctr_ % 3 + 1;
   settings_dirty_      = true;
   diag_sweep_requested_ = true;
   if (needs_intake_()) {
     publish_room_temperature_();
-  } else if (!std::isnan(ext_temp_c_)) {
+  } else {
     this->current_temperature = ext_temp_c_;
     this->publish_state();
   }
+}
+
+// current_temperature_sensor is used while it has a value that is either recent or
+// confirmed by a live HA connection (an HA sensor only sends changes, so a steady
+// cabin temperature is not stale while HA is connected). If HA or WiFi drops, or the
+// HA entity becomes unavailable, the heater's own sensor takes over: an old, cold
+// value must not keep the heater at full output.
+void EsparCanComponent::check_cabin_temperature_(uint32_t now) {
+  if (current_temp_sensor_ == nullptr) return;
+#ifdef USE_API
+  if (!std::isnan(ext_temp_c_) && api::global_api_server != nullptr &&
+      api::global_api_server->is_connected_with_state_subscription())
+    t_ext_temp_ = now;
+#endif
+  bool ok = !std::isnan(ext_temp_c_) && (now - t_ext_temp_) < CABIN_TEMP_MAX_AGE_MS;
+  if (ok == ext_temp_ok_) return;
+  ext_temp_ok_ = ok;
+  if (!room_sensor_controller_) return;  // not in use; only remembered for a later switch
+
+  if (ok) {
+    ESP_LOGI(TAG, "Cabin temperature available (%.1f °C) — regulating on it", ext_temp_c_);
+    if (ext_temp_fault_published_) { ext_temp_fault_published_ = false; publish_fault_("OK"); }
+    this->current_temperature = ext_temp_c_;
+    this->publish_state();
+  } else {
+    if (std::isnan(ext_temp_c_))
+      ESP_LOGW(TAG, "Cabin temperature unavailable — regulating on the heater's own sensor");
+    else
+      ESP_LOGW(TAG, "Cabin temperature stale (no update and no HA connection for %lu min) — regulating on the heater's own sensor",
+               (unsigned long) (CABIN_TEMP_MAX_AGE_MS / 60000));
+    publish_fault_("CABIN TEMP LOST — using the heater's own sensor");
+    ext_temp_fault_published_ = true;
+    diag_sweep_requested_     = true;  // read the intake sensor now
+    publish_room_temperature_();
+  }
+}
+
+// ── Max run time ─────────────────────────────────────────────────────────
+void EsparCanComponent::set_max_run_time_minutes(float minutes) {
+  if (std::isnan(minutes) || minutes < 0.0f) return;
+  uint32_t ms = static_cast<uint32_t>(minutes * 60000.0f + 0.5f);
+  if (ms == max_run_time_ms_) return;
+  max_run_time_ms_ = ms;
+  if (!driver_installed_) return;  // set from the config; dump_config() shows it
+  if (ms == 0)
+    ESP_LOGW(TAG, "Max run time → no limit");
+  else
+    ESP_LOGI(TAG, "Max run time → %.0f min", minutes);
+}
+
+// The heater has no run-time limit of its own: HEAT or FAN ONLY is switched off
+// after max_run_time, however it was started (HA, automation, timer, lambda). The
+// time counts from leaving OFF; switching between HEAT and FAN ONLY doesn't reset it.
+void EsparCanComponent::check_max_run_time_(uint32_t now) {
+  if (this->mode == climate::CLIMATE_MODE_OFF) {
+    run_active_ = false;
+    return;
+  }
+  if (!run_active_) {
+    run_active_     = true;
+    run_started_ms_ = now;
+    return;
+  }
+  if (max_run_time_ms_ == 0 || (now - run_started_ms_) < max_run_time_ms_) return;
+  ESP_LOGW(TAG, "Max run time (%lu min) reached — switching off", (unsigned long) (max_run_time_ms_ / 60000));
+  run_active_ = false;
+  this->mode  = climate::CLIMATE_MODE_OFF;
+  apply_climate_mode_();
+  this->publish_state();
 }
 
 // Setpoint sent with a HEAT command: the climate target.
@@ -1310,7 +1393,14 @@ void EsparCanComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "  Controller ID (0x60D D3-D5): %02X %02X %02X | 0x62 D8: 0x%02X",
                 ctrl_id_[0], ctrl_id_[1], ctrl_id_[2], init_62_last_);
   ESP_LOGCONFIG(TAG, "  Auto-clear IDLE lock: %s", auto_clear_idle_lock_ ? "yes" : "no");
-  ESP_LOGCONFIG(TAG, "  Regulation: heater, on %s", room_from_controller_() ? "current_temperature_sensor" : "its own sensor");
+  ESP_LOGCONFIG(TAG, "  Regulation: heater, on %s",
+                room_sensor_controller_ && current_temp_sensor_ != nullptr
+                    ? "current_temperature_sensor (its own sensor while that is unavailable or stale)"
+                    : "its own sensor");
+  if (max_run_time_ms_ == 0)
+    ESP_LOGCONFIG(TAG, "  Max run time: no limit");
+  else
+    ESP_LOGCONFIG(TAG, "  Max run time: %lu min", (unsigned long) (max_run_time_ms_ / 60000));
   LOG_TEXT_SENSOR("  ",    "Heater State",     heater_state_sensor_);
   LOG_BINARY_SENSOR("  ",  "Heating",          flame_sensor_);
   LOG_BINARY_SENSOR("  ",  "Status Flag 0x20", flag_0x20_sensor_);

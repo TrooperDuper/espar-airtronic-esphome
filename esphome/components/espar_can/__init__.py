@@ -42,7 +42,10 @@ Config options (see CONFIG_SCHEMA below):
                       conversion internally, no lambda filter needed in YAML.
   room_sensor       — which room temperature the heater regulates on:
                       "heater" (default, its own intake sensor read over UDS) or
-                      "controller" (current_temperature_sensor).
+                      "controller" (current_temperature_sensor; the heater's own
+                      sensor takes over while that is unavailable or stale).
+  max_run_time      — HEAT / FAN_ONLY are switched off after this time (default
+                      120min; 0min = no limit). The heater has no limit of its own.
 """
 
 import esphome.codegen as cg
@@ -87,6 +90,7 @@ EsparCanComponent = espar_can_ns.class_(
 CONF_CURRENT_TEMPERATURE_SENSOR = "current_temperature_sensor"
 CONF_CABIN_TEMP_UNIT            = "cabin_temp_unit"
 CONF_ROOM_SENSOR                = "room_sensor"
+CONF_MAX_RUN_TIME               = "max_run_time"
 CONF_CONTROLLER_ID              = "controller_id"
 CONF_AUTO_CLEAR_IDLE_LOCK       = "auto_clear_idle_lock"
 CONF_INIT_0X62_BYTE             = "init_0x62_byte"
@@ -248,6 +252,10 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_ROOM_SENSOR, default="heater"): cv.one_of(
                 "heater", "controller", lower=True
             ),
+            # The heater has no run-time limit of its own: HEAT or FAN_ONLY is
+            # switched off after this time, however it was started. 0min = no limit.
+            # Can be changed at run time with set_max_run_time_minutes().
+            cv.Optional(CONF_MAX_RUN_TIME, default="120min"): cv.positive_time_period_minutes,
             # Controller identity. 24-bit ID in 0x60D D3–D5 and the
             # last byte of init frame 0x62. Defaults reproduce the maintainer's Pro.
             cv.Optional(CONF_CONTROLLER_ID, default=0x82B609): cv.int_range(min=0, max=0xFFFFFF),
@@ -280,6 +288,7 @@ async def to_code(config):
 
     cg.add(var.set_cabin_temp_fahrenheit(config[CONF_CABIN_TEMP_UNIT] == "fahrenheit"))
     cg.add(var.set_room_sensor_controller(config[CONF_ROOM_SENSOR] == "controller"))
+    cg.add(var.set_max_run_time_minutes(config[CONF_MAX_RUN_TIME].total_minutes))
     cg.add(var.set_controller_id(config[CONF_CONTROLLER_ID]))
     cg.add(var.set_init_0x62_byte(config[CONF_INIT_0X62_BYTE]))
     cg.add(var.set_auto_clear_idle_lock(config[CONF_AUTO_CLEAR_IDLE_LOCK]))

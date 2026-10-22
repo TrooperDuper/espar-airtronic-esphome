@@ -75,7 +75,7 @@ If your HA cabin temperature sensor reports in **Fahrenheit**, set `cabin_temp_u
 | File | What it has |
 |---|---|
 | `espar-heater.yaml` | Minimal: the core entities, diagnostics only as comments |
-| `espar-heater-full.yaml` | Everything: a select to switch the room sensor at run time, every diagnostic entity, a *Max Run Time* safety limit, and the web dashboard sorted into groups |
+| `espar-heater-full.yaml` | Everything: a select to switch the room sensor at run time, every diagnostic entity, *Max Run Time* as a number entity, and the web dashboard sorted into groups |
 
 Both use the same hardware section and secrets (the full one needs no extra secrets).
 
@@ -141,6 +141,10 @@ espar_can:
                                         # "heater" (default, its own intake sensor)
                                         # or "controller" (current_temperature_sensor)
   current_temperature_sensor: cabin_avg_temp   # optional; only used with room_sensor: controller
+
+  max_run_time: 120min                  # default 120min; 0min = no limit. HEAT or FAN ONLY is switched
+                                        # off after this time, however it was started — the heater
+                                        # has no limit of its own. Run-time change: set_max_run_time_minutes()
 
   auto_clear_idle_lock: true            # default true. After a heater power interruption the heater
                                         # often sits in IDLE with fault byte D3=0x04 and ignores
@@ -275,6 +279,10 @@ Where the room temperature comes from (`room_sensor`):
 | `heater` (default) | The heater's own intake sensor, read over UDS (FD01, read-only) minus 3.0 K — the same correction the heater applies to its own value. Works without a `diagnostics:` block. |
 | `controller` | `current_temperature_sensor`, sent as the control unit's sensor (like the Pro's built-in sensor). Needs `current_temperature_sensor`; without it the heater's sensor is used. |
 
+> **Intake air:** `heater` measures the air the heater draws in. That is the cabin temperature only when the heater recirculates cabin air. With a fresh-air intake it would regulate on the outdoor temperature — use `controller` then.
+
+> **Lost cabin temperature:** with `controller`, the heater's own sensor takes over while the value is missing (HA entity unavailable) or stale — no update and no HA connection for 5 min. An HA sensor only sends changes, so a steady value is fine as long as HA is connected. The log says so and *Espar Fault* shows `CABIN TEMP LOST — using the heater's own sensor` until the value is back. This keeps a WiFi or HA outage from leaving the heater on an old, cold value at full output. Don't put `filter_out: nan` on the cabin sensor: it would hide *unavailable* from the component.
+
 It can be switched at run time, e.g. from a template select (as in `espar-heater-full.yaml`):
 
 ```yaml
@@ -288,7 +296,7 @@ select:
       - lambda: id(espar).set_room_sensor_controller(x == "External");
 ```
 
-What to expect (Airtronic S3 B2L): with the setpoint below the room temperature the heater runs its blower for ~15 s, then goes into its **control pause** (no flame, blower off). Raising the setpoint makes it ignite by itself; lowering it while burning reduces the power demand. The heater's control is PI-like: a 1 K setpoint step moves the power demand by ~10 % at once, then it keeps drifting by ~0.5 % per 10 s and kelvin of error — up while below the setpoint, down while above, standing still at the setpoint. Above the setpoint while burning it runs down to 0 % demand and then stays at minimum output (fuel pump ~2.1 Hz) rather than pausing, as long as the room doesn't keep warming (55 min run, room 2–3 K above the setpoint for 16 min, no pause). The climate action shows *Idle* during the pause (detected via FD10 phase `0x28`), although 0x2C4 still reports HEATING — *Espar Heating* stays on meanwhile. The heater does not limit its own run time; use a timer or automation if you need one. Background and measurements: [docs/experiments/heater-regulation.md](../docs/experiments/heater-regulation.md).
+What to expect (Airtronic S3 B2L): with the setpoint below the room temperature the heater runs its blower for ~15 s, then goes into its **control pause** (no flame, blower off). Raising the setpoint makes it ignite by itself; lowering it while burning reduces the power demand. The heater's control is PI-like: a 1 K setpoint step moves the power demand by ~10 % at once, then it keeps drifting by ~0.5 % per 10 s and kelvin of error — up while below the setpoint, down while above, standing still at the setpoint. Above the setpoint while burning it runs down to 0 % demand and then stays at minimum output (fuel pump ~2.1 Hz) rather than pausing, as long as the room doesn't keep warming (55 min run, room 2–3 K above the setpoint for 16 min, no pause). The climate action shows *Idle* during the pause (detected via FD10 phase `0x28`), although 0x2C4 still reports HEATING — *Espar Heating* stays on meanwhile. The heater does not limit its own run time; the component switches HEAT or FAN ONLY off after `max_run_time` (default 120 min, `0min` = no limit; `espar-heater-full.yaml` sets it from a number entity). Background and measurements: [docs/experiments/heater-regulation.md](../docs/experiments/heater-regulation.md).
 
 > Don't try to make the heater use its own sensor by sending "no value" (`FE FF`) with sensor selection `00`: it then regulates on 0.0 °C and keeps heating. The component always sends a real value.
 

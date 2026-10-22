@@ -95,10 +95,10 @@ sensor:
     id: cabin_avg_temp
     entity_id: sensor.cabin_average_temperature   # ← update to your HA sensor
     unit_of_measurement: "°F"
-    filters:
-      - filter_out: nan                            # ignore unavailable readings
-      # No °F→°C lambda needed — cabin_temp_unit: fahrenheit handles conversion
-      # internally in the component.
+    # No filter_out: nan — "unavailable" must reach the component, which then
+    # regulates on the heater's own sensor instead of an old value.
+    # No °F→°C lambda needed — cabin_temp_unit: fahrenheit handles conversion
+    # internally in the component.
 
   # WiFi signal — useful for placement decisions in the Trooper
   - platform: wifi_signal
@@ -123,6 +123,10 @@ espar_can:
   # Cabin temperature sensor. Sent to the heater as the room temperature with
   # room_sensor: controller; otherwise not needed.
   current_temperature_sensor: cabin_avg_temp
+
+  # The heater has no run-time limit of its own: HEAT or FAN ONLY is switched
+  # off after this time, however it was started. 0min = no limit.
+  max_run_time: 120min
 
   # ── Heater status sensors ──────────────────────────────────────────────
   heater_state:
