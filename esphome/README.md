@@ -160,7 +160,7 @@ espar_can:
     name: "Espar Heater State"
   flame_active:                         # optional binary sensor: true while heater reports HEATING (0x2C4 D1=0x09)
     name: "Espar Heating"
-  flag_0x20:                            # optional diagnostic: raw 0x2C4 D2 bit5, meaning unconfirmed
+  flag_0x20:                            # optional diagnostic: raw 0x2C4 D2 bit5 = altitude compensation active
     name: "Espar Status Flag 0x20"
   heater_connected:                     # optional binary sensor: true when 0x625 heartbeat present
     name: "Espar Connected"
@@ -252,7 +252,7 @@ All diagnostic entities (each optional):
 | `operating_hours` | Sensor (h) | FD17 | Operating time (fan, heating, cooldown) |
 | `hours_power_0_25` … `hours_power_75_100`, `hours_control_pause`, `hours_altitude_mode` | Sensor (h) | FD17 | Time per power band, in control pause and in altitude mode |
 | `control_unit_temperature` | Sensor (°C) | FD35 | Likely the control unit's temperature (unconfirmed) |
-| `air_pressure` | Sensor (hPa) | FD36 | Likely the altitude-compensation sensor (unconfirmed) |
+| `air_pressure` | Sensor (hPa) | FD36 | Air pressure the heater uses for altitude compensation (793 hPa at ~2,100 m) |
 | `software_version`, `hardware_version`, `part_number` | Text sensor | F195, F193, F1F0 | Read once |
 | `fault_memory` | Text sensor | `19 02 08` | Stored P-codes, `(active)` if active now; `None` if empty. Meanings: [docs/fault-codes.md](../docs/fault-codes.md) |
 
@@ -280,6 +280,8 @@ Where the room temperature comes from (`room_sensor`):
 | `controller` | `current_temperature_sensor`, sent as the control unit's sensor (like the Pro's built-in sensor). Needs `current_temperature_sensor`; without it the heater's sensor is used. |
 
 > **Intake air:** `heater` measures the air the heater draws in. That is the cabin temperature only when the heater recirculates cabin air. With a fresh-air intake it would regulate on the outdoor temperature — use `controller` then.
+
+> **After a run the heater's own sensor reads high.** Residual heat soaks into the intake sensor: after a 10-min run (B2L) it climbed from 23 °C to 28 °C over the next 15 min and was still 27 °C half an hour later, with the cabin at 11–12 °C — about 15 K high. That errs on the safe side (the heater under-heats or pauses), but for that time the heater's own sensor is no stand-in for the cabin. Prefer `controller` with a cabin sensor if you restart soon after a run.
 
 > **Lost cabin temperature:** with `controller`, the heater's own sensor takes over while the value is missing (HA entity unavailable) or stale — no update and no HA connection for 5 min. An HA sensor only sends changes, so a steady value is fine as long as HA is connected. The log says so and *Espar Fault* shows `CABIN TEMP LOST — using the heater's own sensor` until the value is back. This keeps a WiFi or HA outage from leaving the heater on an old, cold value at full output. Don't put `filter_out: nan` on the cabin sensor: it would hide *unavailable* from the component.
 
@@ -319,7 +321,7 @@ What to expect (Airtronic S3 B2L): with the setpoint below the room temperature 
 | `climate.espar_heater` | Climate | Main control entity |
 | `sensor.espar_heater_state` | Text sensor | STARTUP / IDLE / HEATING / FAN / COOLDOWN / UNKNOWN. COOLDOWN = after-run (blower purging, ~4 min after heating); the climate action shows *Fan* meanwhile. |
 | `binary_sensor.espar_heating` | Binary sensor | True while the heater reports HEATING (0x2C4 D1=0x09), including the ignition ramp — not a combustion confirmation. YAML key: `flame_active`. Formerly `binary_sensor.espar_flame_active` (see Upgrading below). |
-| `binary_sensor.espar_status_flag_0x20` | Binary sensor | Raw 0x2C4 D2 bit5 — diagnostic, meaning unconfirmed |
+| `binary_sensor.espar_status_flag_0x20` | Binary sensor | Raw 0x2C4 D2 bit5 — on while the heater compensates for altitude (diagnostic) |
 | `binary_sensor.espar_connected` | Binary sensor | True when 0x625 heartbeat present |
 | `sensor.espar_fault` | Text sensor | "OK" or fault description string |
 | `switch.espar_can_standby` | Switch | Suspend all TX frames for OEM diagnostics (see below) |

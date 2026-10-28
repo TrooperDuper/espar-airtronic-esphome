@@ -189,8 +189,8 @@ espar_can:
     id: espar_flame_active
     device_class: running   # HA shows "Running / Not running" (heat would show "Hot / Normal")
 
-  # Raw 0x2C4 D2 bit5. Previously used as "flame"; it doesn't appear on every
-  # heater. Kept as a diagnostic so more data builds up across units/altitudes.
+  # Raw 0x2C4 D2 bit5: on while the heater compensates for altitude (only seen
+  # at altitude; comes on during pre-glow). Previously misread as "flame".
   flag_0x20:
     name: "Espar Status Flag 0x20"
     id: espar_flag_0x20

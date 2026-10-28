@@ -77,7 +77,7 @@ Values are from idle unless noted. *confirmed* = measured here and consistent ac
 | `FD2A` | 2 | **Burn time of the current run** × 0.01 s, from flame detection; stays at its last value after stopping | confirmed (not in the Hydronic list) |
 | `FD2B` | 2 | Time in the ignition phase × 0.01 s, 0 otherwise | one reading |
 | `FD35` | 2 | Likely **control unit temperature**, FD01 scaling (16.6 °C cold → 33.7 °C after 10 min heating) | Hydronic, plausible |
-| `FD36` | 2 | Likely **air pressure** × 0.1 hPa (10160 = 1016.0 hPa; a phone nearby read 1011.8 hPa). Would be the sensor for altitude compensation | plausible |
+| `FD36` | 2 | Likely **air pressure** × 0.1 hPa (10160 = 1016.0 hPa; a phone nearby read 1011.8 hPa). The sensor for altitude compensation: 793 hPa on a B2L at ~2,100 m | confirmed |
 | `FD45` | 4 | 2 × uint16, **(°C + 50) × 10**: word 1 = **setpoint** the heater is using (500 = none), word 2 = **temperature it regulates on**. Identical to the 0x2C4 D5/D6 value | confirmed (not in the Hydronic list) |
 | `FD06` | 2 | Event counter: +1 at each start and +1 at each burner stop | confirmed |
 | `FD6A` | 4 | **Fuel pump strokes, total** (1,787,097). 32.26 l / strokes = 18.05 µl; over a single run 799 strokes for 14.37 ml = **17.98 µl per stroke** (Hydronic: 29 µl) | confirmed (not in the Hydronic list) |
@@ -218,6 +218,5 @@ This answers the open questions in [fault-codes.md](fault-codes.md) about the Ea
 ## Open
 
 - Meaning of `FD01` word 3, `FD0C`, `FD0F` bytes 2–9 and the `FEFF` bytes marked open
-- Whether `FD17` word 7 (altitude mode) counts on a heater that sets 0x2C4 bit `0x20` — a direct test of the altitude theory for that bit
 - The same identifiers on a diesel Airtronic and on other variants
 - Range `0000`–`0FFF`

@@ -44,8 +44,9 @@
 During HEATING (D1=0x09):
   D2=0x00   Heating commanded; no flame yet (startup ramp, or thermostat cycling)
   D2=0x08   Intermediate / transition state (~3-4 min observed, mid-cycle)
-  D2=0x20   Flag 0x20 — meaning unconfirmed (leading theory: altitude compensation). Set ~45 s
-            into each burn on one B2L (~2,100 m); never set on another B2L near sea level.
+  D2=0x20   Flag 0x20 — altitude compensation active (almost certain: 793 hPa and 286 h in
+            altitude mode on a B2L at ~2,100 m; 0 h and never set on a B2L near sea level).
+            Comes on during pre-glow, before flame detection; clears at shutdown.
             NOT a reliable flame signal — use D1=0x09 (HEATING) instead.
 
 During IDLE (D1=0x03):
@@ -81,7 +82,7 @@ During IDLE after fault (D1=0x03):
 state     = msg[0]            # 0x09=heating, 0x0B=fault, 0x21=fan-only, 0x03=idle
 sub_state = msg[1]
 fault_code= msg[2]            # 0x00=ok; 0x20=flame loss; 0x40=overtemp
-burning   = (msg[0] == 0x09)      # HEATING; (msg[1] & 0x20) is an unconfirmed flag, not flame
+burning   = (msg[0] == 0x09)      # HEATING; (msg[1] & 0x20) = altitude compensation, not flame
 
 # Fault detection (covers active fault AND brief post-fault IDLE):
 in_fault  = (state == 0x0B) or (fault_code != 0x00)
