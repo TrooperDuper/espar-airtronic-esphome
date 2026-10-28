@@ -12,6 +12,8 @@
 #include "esphome/components/api/api_server.h"
 #endif
 #include <cstring>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <cmath>
 #include <string>
 
@@ -49,6 +51,10 @@ void EsparCanComponent::setup() {
 
   driver_installed_ = true;
 
+#ifdef USE_OTA_STATE_LISTENER
+  if (ota_safe_stop_) ota::get_global_ota_callback()->add_global_state_listener(this);
+#endif
+
   // Send init burst immediately — heater expects this before responding
   send_init_burst_();
   init_done_   = true;
@@ -70,6 +76,8 @@ void EsparCanComponent::setup() {
 
 void EsparCanComponent::loop() {
   if (!driver_installed_) return;
+  // OTA keep-alive task owns TX until the reboot (or until the OTA fails)
+  if (ota_keepalive_active_) return;
 
   // ── RX: process incoming heater frames ──────────────────────────────
   handle_rx_();
@@ -1379,6 +1387,68 @@ void EsparCanComponent::handle_status_burst_(uint32_t now) {
     }
   }
 }
+
+// =============================================================================
+// OTA SAFE STOP (#27)
+// =============================================================================
+// An OTA upload blocks the main loop for ~20–30 s. A heater that is busy
+// (starting, heating, fan, cooldown) and loses its controller for more than
+// ~15 s ends the run by itself and stores P000307 + P000440. So when an OTA
+// starts with the heater busy: command IDLE (a normal stop, the heater runs
+// its usual cooldown) and let a small task keep sending the heartbeat and the
+// IDLE command group until the reboot. After the reboot the component starts
+// in OFF anyway, so the heater is in the state the new image expects.
+#ifdef USE_OTA_STATE_LISTENER
+void EsparCanComponent::on_ota_global_state(ota::OTAState state, float progress, uint8_t error,
+                                           ota::OTAComponent *comp) {
+  if (state == ota::OTA_STARTED) {
+    if (ota_keepalive_active_ || tx_standby_ || !heater_connected_) return;
+    if (!cmd_heating_ && !cmd_fan_ && !heater_active_()) return;  // idle: silence is harmless
+    if (foreign_ctrl_present_) return;  // another controller is in charge, don't talk over it
+    ESP_LOGW(TAG, "OTA update started with the heater busy — stopping it and keeping the bus alive");
+    this->mode = climate::CLIMATE_MODE_OFF;
+    apply_climate_mode_();   // cmd_heating_ = cmd_fan_ = false → IDLE
+    this->publish_state();
+    uint16_t room = room_word_();
+    ota_room_lo_ = static_cast<uint8_t>(room & 0xFF);
+    ota_room_hi_ = static_cast<uint8_t>((room >> 8) & 0xFF);
+    ota_keepalive_stop_   = false;
+    ota_keepalive_active_ = true;
+    if (xTaskCreate(ota_keepalive_task_, "espar_ota_ka", 2048, this, 5, nullptr) != pdPASS) {
+      ota_keepalive_active_ = false;   // no task: fall back to the plain stop
+      ESP_LOGE(TAG, "OTA keep-alive task could not be started");
+    }
+  } else if (state == ota::OTA_ERROR || state == ota::OTA_ABORT) {
+    // Upload failed, no reboot: the main loop takes over again (still IDLE)
+    if (ota_keepalive_active_) ota_keepalive_stop_ = true;
+  }
+}
+
+// Heartbeat 0x60D every 100 ms, IDLE command group 0x54–0x57 every 200 ms —
+// the same frames the main loop sends while OFF.
+void EsparCanComponent::ota_keepalive_task_(void *arg) {
+  auto *self = static_cast<EsparCanComponent *>(arg);
+  const uint8_t d54[8] = {0x00, 0x00, 0xFE, 0xFF, self->ota_room_lo_, self->ota_room_hi_, 0x00, 0x00};
+  static const uint8_t d55[] = {0x10,0x27,0x00,0x00,0x00,0x00,0x00,0x00};
+  static const uint8_t d57[] = {0x00,0x00,0xFE,0xFF,0xFE,0xFF,0x00,0x00};
+  for (uint32_t tick = 0; !self->ota_keepalive_stop_; tick++) {
+    self->send_heartbeat_();
+    if ((tick & 1) == 0) {
+      self->send_frame_(0x54, d54, 8);
+      self->send_frame_(0x55, d55, 8);
+      self->send_frame_(0x56, d55, 8);   // 0x56 = same payload as 0x55
+      self->send_frame_(0x57, d57, 8);
+    }
+    vTaskDelay(pdMS_TO_TICKS(INTERVAL_HEARTBEAT_MS));
+  }
+  // Drain what the heater sent meanwhile so the main loop resumes on fresh frames
+  twai_message_t m;
+  while (twai_receive(&m, 0) == ESP_OK) {}
+  self->heater_last_seen_ = millis();
+  self->ota_keepalive_active_ = false;
+  vTaskDelete(nullptr);
+}
+#endif
 
 // =============================================================================
 // UTILITY
