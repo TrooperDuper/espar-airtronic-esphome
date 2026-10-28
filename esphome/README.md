@@ -24,6 +24,8 @@ external_components:
     components: [espar_can]
 ```
 
+`ref: main` follows the latest code. To stay on a tested release instead, use its tag, e.g. `ref: v2.0.0` (releases and their notes: [Releases](https://github.com/TrooperDuper/espar-airtronic-esphome/releases)). ESPHome caches the download for a day; add `refresh: 0s` to the source to always fetch the latest.
+
 **Option B — Local copy (for development)**
 
 Copy the `components/` folder to the same directory as your ESPHome YAML:

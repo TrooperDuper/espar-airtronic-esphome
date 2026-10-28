@@ -8,60 +8,49 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
-### Fixed (after #19)
-- *Espar Heater State* no longer blinks `UNKNOWN` for one frame when the heater stops: 0x2C4 D1 = `0x01` (seen right after IDLE is commanded, raw `01 20 00 00`, and at the end of cooldown) is reported as `COOLDOWN`.
+---
 
-### ⚠️ Breaking — the heater regulates (#9)
-- **The heater regulates itself, always:** in HEAT the climate target goes to the heater as its setpoint together with a real room temperature in 0x54 D5/D6 ((°C + 50) × 10), and the heater starts, modulates, pauses and restarts by itself, like with the OEM EasyStart Pro. The component no longer switches the heater on and off, so there is no short-cycling (no full cooldown and new glow-plug ignition at every setpoint crossing). Tested on an Airtronic S3 B2L, incl. a 55 min run (docs/experiments/heater-regulation.md).
-- **Removed:** the component's own thermostat and its options `heat_setpoint_f`, `pause_mode`, `hysteresis`, `min_run_time`, `min_off_time`, `max_starts_per_hour` (the last four were added after #14 and never released). A config that still sets one of them fails validation with a message saying so — delete the option. The heat-confirm timeout is gone too: in its control pause the heater rightly doesn't heat.
-- **`room_sensor`**: `heater` (default — the heater's own intake sensor, read over UDS, minus its 3.0 K correction; works without a `diagnostics:` block) or `controller` (`current_temperature_sensor`, the former thermostat input). Switchable at run time with `set_room_sensor_controller()`; a change re-sends the settings frames with the 0x63 change counter, as the OEM controller does.
-- **Lost cabin temperature:** with `room_sensor: controller` the heater's own sensor takes over while `current_temperature_sensor` has no value (HA entity unavailable) or is stale — no update and no HA connection for 5 min (an HA sensor only sends changes, so a steady value counts as current while HA is connected). Logged at WARN, *Espar Fault* = `CABIN TEMP LOST — using the heater's own sensor`, cleared when the value is back. The example configs no longer put `filter_out: nan` on the cabin sensor — it hid *unavailable* from the component.
-- **`max_run_time`** (default `120min`, `0min` = no limit): HEAT or FAN ONLY is switched off after this time, however it was started — the heater has no limit of its own. Part of the component, so every config has it; changeable at run time with `set_max_run_time_minutes()`.
-- **`esphome/espar-heater-full.yaml`**: a second example config with a select to switch the room sensor at run time, every diagnostic entity, *Max Run Time* as a number entity (sets `max_run_time` at run time, 0 = no limit) and the web dashboard sorted into groups. `espar-heater.yaml` stays the minimal example.
-- The climate action shows *Idle* during the heater's control pause (FD10 phase `0x28`), where 0x2C4 still reports HEATING.
+## [2.0.0] — 2026-10-28
 
-### Added — heater diagnostics
-- **Optional, read-only diagnostics over UDS** (0x7A0 → 0x73C): a new `diagnostics:` block on `espar_can`. Off unless the block is present. Only ReadDataByIdentifier and ReadDTCInformation (`19 02 08`) are sent; nothing is written, reset or cleared, and nothing is sent in CAN Standby or while the heater isn't connected. Entities include real flame detection, combustion phase, flame and intake temperature, supply voltage, fuel pump frequency, glow plug, fuel rate and lifetime fuel, the heater's operating-hour counters, versions/part number and the **fault memory with P-codes** (read on connect, on a fault, after each run, or via `read_fault_memory()`). Polled every `update_interval` (default 10 s) while the heater is active, once a minute while idle. See *Heater diagnostics* in `esphome/README.md` and `docs/uds-diagnostics.md`.
-- Diagnostic answers on 0x73C and another tester's requests on 0x7A0 are no longer reported as unknown IDs.
+The heater now regulates itself, as with the OEM EasyStart Pro, and the component can read the heater's own diagnostics. Several config options were removed — see **Breaking** below and *Upgrading* in `esphome/README.md`.
 
-### Added (after #14)
-- **COOLDOWN heater state:** D1=IDLE with D2 bit 3 and no fault code = after-run blower. *Espar Heater State* shows `COOLDOWN` and the climate action shows *Fan* until it's truly idle. The example YAML adds a dim-orange LED colour.
-- **Other controller on the bus:** another controller's 0x60D or 0x54–0x57 frames while the WeAct is transmitting set *Espar Fault* = `OTHER CONTROLLER ON BUS — enable CAN Standby` (cleared when it disappears or Standby is turned on). 0x60D, 0x65 and the init-burst IDs are now treated like 0x54–0x57: logged at debug, not raised as unknown-ID faults.
-- Other-controller detection is re-armed when CAN Standby is turned off, so a Pro left on the bus raises the fault instead of being silently ignored.
-- An unmapped 0x2C4 state (shown as `UNKNOWN`) now logs its raw D1–D4 bytes at WARN, so it can be identified.
-
-### Changed (after #14)
-- CAN bus errors are logged as one summary every 5 s instead of one line per error. With the heater unpowered nothing ACKs the WeAct's frames and the error count climbs by thousands per second, which previously stalled the main loop.
-- Climate entity minimum setpoint lowered from 15 °C (59 °F) to 10 °C (50 °F), matching the heater's own setpoint range (Airtronic 3 Technical Description §4.4). Override with the standard `visual:` block if needed.
-
-### Fixed
-- **Heater ignored commands after a power interruption while reporting OK** ([#14](https://github.com/TrooperDuper/espar-airtronic-esphome/issues/14)). The heater often comes back in IDLE with D3 = `0x04` and ignores HEAT/FAN until 0x54 goes FAN → IDLE. The component now reports it (*Espar Fault* = `IDLE LOCK: …`) and releases it automatically (`auto_clear_idle_lock`, default on: 45 s wait, FAN 6 s, IDLE 5 s, up to 3 tries). Verified 2/2 on hardware.
-- Heartbeat-timeout underflow that caused connect/disconnect flapping (sample `now` after RX).
-- ESPHome 2026.5+ compatibility: ClimateTraits feature flags.
+### ⚠️ Breaking
+- **The heater regulates itself** ([#9](https://github.com/TrooperDuper/espar-airtronic-esphome/issues/9), [#19](https://github.com/TrooperDuper/espar-airtronic-esphome/pull/19)). In HEAT the climate target goes to the heater as its setpoint, together with a real room temperature in 0x54 D5/D6 ((°C + 50) × 10). The heater starts, modulates, pauses and restarts by itself — no more short-cycling (full cooldown and new glow-plug ignition at every setpoint crossing). The climate action shows *Idle* during the heater's control pause (FD10 phase `0x28`), where 0x2C4 still reports HEATING.
+- **Removed options:** the component's own thermostat with `heat_setpoint_f` and `pause_mode`. A config that still sets either fails validation with a message saying so — delete the option. (`hysteresis`, `min_run_time`, `min_off_time` and `max_starts_per_hour` existed briefly on `main` and are rejected the same way.) The heat-confirm timeout is gone too: in its control pause the heater rightly doesn't heat.
+- **Entity rename:** the example config's `flame_active` entity is now **"Espar Heating"** (was "Espar Flame Active"); it follows the heater's HEATING state (0x2C4 D1=0x09), ignition ramp included. Home Assistant creates `binary_sensor.espar_heating` and leaves the old entity orphaned — see **Upgrading** in `esphome/README.md`. The YAML key `flame_active` is unchanged.
+- **Don't filter the cabin sensor:** remove `filter_out: nan` from the `current_temperature_sensor` — it hides *unavailable*, which the new fallback needs.
 
 ### Added
-- `controller_id` and `init_0x62_byte` options (0x60D controller ID and last byte of init frame 0x62). Defaults unchanged. The heater accepted every value tested.
-- Every change of the 0x2C4 D3 fault byte is logged at WARN.
-- Example config: status LED colour actions set `effect: "None"`, so the red fault pulse stops once the fault clears.
-- 0x2C4 status also counts as heater liveness (not only the 0x625 heartbeat). A real EasyStart Pro's 0x54–0x57 frames are ignored instead of raised as unknown-ID faults.
+- **`room_sensor`** — what the heater regulates on: `heater` (default; its own intake sensor read over UDS, minus its 3.0 K correction) or `controller` (`current_temperature_sensor`). Switchable at run time with `set_room_sensor_controller()`.
+- **Cabin-temperature fallback:** with `room_sensor: controller`, the heater's own sensor takes over while the cabin value is unavailable, or stale (no update *and* no HA connection for 5 min). *Espar Fault* shows `CABIN TEMP LOST — using the heater's own sensor` until it's back.
+- **`max_run_time`** (default `120min`, `0min` = no limit): HEAT or FAN ONLY switch off after this time, however they were started — the heater has no limit of its own. Changeable at run time with `set_max_run_time_minutes()`.
+- **Optional read-only diagnostics over UDS** (0x7A0 → 0x73C), a new `diagnostics:` block: real flame detection, combustion phase, flame and intake temperature, supply voltage, fuel pump, glow plug, fuel rate and lifetime fuel, power demand, setpoint/regulating temperature, air pressure, the heater's operating-hour counters, versions/part number and the **fault memory with P-codes**. Only ReadDataByIdentifier and ReadDTCInformation are sent — nothing is written, reset or cleared, and nothing is sent in CAN Standby. By [@rhd944dot1](https://github.com/rhd944dot1), building on [@farnham26](https://github.com/farnham26)'s Hydronic research.
+- **`esphome/espar-heater-full.yaml`:** a second example with every diagnostic entity, a room-sensor select, *Max Run Time* as a number entity and a grouped web dashboard. `espar-heater.yaml` stays the minimal example.
+- **COOLDOWN heater state:** the ~4 min after-run (D1=IDLE with D2 bit 3, or the one-frame `0x01` transition) shows as `COOLDOWN`, climate action *Fan*. The example YAML adds a dim-orange LED colour.
+- **IDLE-lock release** ([#14](https://github.com/TrooperDuper/espar-airtronic-esphome/issues/14)): after a power interruption the heater can sit in IDLE with D3 = `0x04` and ignore commands. The component reports it (*Espar Fault* = `IDLE LOCK: …`) and releases it automatically (`auto_clear_idle_lock`, default on).
+- **Other controller on the bus:** another controller's 0x60D or 0x54–0x57 frames while the WeAct transmits set *Espar Fault* = `OTHER CONTROLLER ON BUS — enable CAN Standby` (re-armed when Standby is turned off).
+- `controller_id` and `init_0x62_byte` options (0x60D controller ID and last byte of init frame 0x62). Defaults unchanged.
+- Optional diagnostic binary sensor `flag_0x20` (0x2C4 D2 bit 5 — altitude compensation active).
 
 ### Changed
-- `flame_active` now follows the heater's HEATING state (0x2C4 D1=0x09) instead of D2 bit5. The raw D2 bit5 is exposed as a new optional diagnostic binary sensor `flag_0x20` (meaning unconfirmed; absent on a sea-level B2L — leading theory is altitude compensation). The YAML key `flame_active` is unchanged.
+- Climate entity minimum setpoint lowered from 15 °C (59 °F) to 10 °C (50 °F), the heater's own lower limit (Airtronic 3 Technical Description §4.4).
+- CAN bus errors are logged as one summary every 5 s instead of one line per error (the WeAct retries endlessly while the heater is unpowered).
+- 0x2C4 status counts as heater liveness, not only the 0x625 heartbeat. A real Pro's frames (0x54–0x57, 0x60D, 0x65, init burst) and diagnostic traffic (0x7A0/0x73C) are no longer raised as unknown-ID faults.
+- Every change of the 0x2C4 D3 fault byte is logged at WARN; an unmapped heater state logs its raw D1–D4 bytes.
+- Status LED migrated from deprecated `neopixelbus` to `esp32_rmt_led_strip`; LED colour actions set `effect: "None"` so the fault pulse stops once the fault clears.
 
-### ⚠️ Breaking — entity rename
-- The example config renames the `flame_active` entity from **"Espar Flame Active"** to **"Espar Heating"** (it's on during the ignition ramp too, so "flame" overstated it). In Home Assistant this creates a new entity (`binary_sensor.espar_heating`) and leaves the old `binary_sensor.espar_flame_active` behind as an unavailable, orphaned entity. Delete it and update any automations/dashboards that used it. See **Upgrading** in `esphome/README.md` for step-by-step cleanup, including how to keep the old entity ID.
-- P000342 corrected to "invalid configuration — check ADR coding" (not "too many CAN controllers"). ADR is the European dangerous-goods agreement (Eberspächer's ADR mode for hazardous-cargo vehicles), not a bus address; the earlier "ADR address" reading was wrong. Thanks to Greg ([@gregoryxxxxxx](https://github.com/gregoryxxxxxx)) for spotting it. The WeAct + Pro conflict is likely both sending the same CAN IDs.
-- Status LED migrated from deprecated `neopixelbus` to `esp32_rmt_led_strip`.
+### Fixed
+- Heater ignored commands after a power interruption while reporting OK ([#14](https://github.com/TrooperDuper/espar-airtronic-esphome/issues/14)) — see IDLE-lock release above.
+- Heartbeat-timeout underflow that caused connect/disconnect flapping.
+- ESPHome 2026.5+ compatibility (ClimateTraits feature flags).
 
 ### Documentation
-- **0x2C4 D2 bit 5 (flag 0x20) = altitude compensation active.** On a B2L at ~2,100 m the heater reads 793 hPa (FD36) with 286 h in altitude mode (FD17); a sea-level B2L reads ~1017 hPa with 0 h and never sets the flag. It comes on during pre-glow, before flame detection.
-- README *Regulation*: after a run the heater's own (intake) sensor reads ~15 K high for 30+ min from residual heat.
-- The Remote+ and Select use LIN, not CAN; the open multi-controller case is two CAN controllers (two Pros, or Pro + EasyStart Web) (thanks @rhd944dot1).
-- **P000342 is "invalid configuration: too many CAN units"**, per Eberspächer's Hydronic S3 repair instructions (via [@farnham26](https://github.com/farnham26)). This refines the P000342 entry under Changed above: ADR is the dangerous-goods mode, not a bus address, and the fault means more than one control unit on the bus. One controller at a time (on a Hydronic, the EasyStart answered another controller's frames with "off").
-- 0x2C4 / 0x54 D5–D6 relabeled as a likely temperature echo (previously "counter"); no behavior change.
-- 0x60D D3–D5 documented as a likely controller ID/serial.
-- Unmapped heater state `0x01` noted (single frame at end of cooldown on another B2L).
-- D3 = `0x04` (power-up lock) added to the fault tables; controller-identity test results in `docs/experiments/controller-id.md`.
+- **UDS diagnostics** (`docs/uds-diagnostics.md`) and the **heater-regulation experiment** (`docs/experiments/heater-regulation.md`) by [@rhd944dot1](https://github.com/rhd944dot1).
+- **0x2C4 / 0x54 D5–D6 = room temperature**, (°C + 50) × 10, confirmed over UDS (FD45). The init burst carries the controller's settings (sensor selection, offset, timers, clock), not an address.
+- **Flag 0x20 = altitude compensation:** 793 hPa and 286 h in altitude mode on a B2L at ~2,100 m; 0 h and never set at sea level. It comes on during pre-glow, before flame detection.
+- **P000342 = "invalid configuration: too many CAN units"** (Eberspächer Hydronic S3 repair instructions, via [@farnham26](https://github.com/farnham26)). ADR is the dangerous-goods mode, not a bus address (thanks Greg, [@gregoryxxxxxx](https://github.com/gregoryxxxxxx)). One controller at a time; the Remote+ and Select use LIN, not CAN ([#15](https://github.com/TrooperDuper/espar-airtronic-esphome/issues/15)).
+- After a run the heater's own (intake) sensor reads ~15 K high for 30+ min from residual heat.
+- D3 = `0x04` (power-up lock) in the fault tables; controller-identity test results in `docs/experiments/controller-id.md`; Acknowledgments section in the README.
 
 ---
 
