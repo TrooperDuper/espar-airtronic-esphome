@@ -40,7 +40,7 @@
 | Byte | Signal | Decode |
 |---|---|---|
 | D1 | Heater state | See state table below |
-| D2 bit 5 | Flag 0x20 (meaning unconfirmed) | Set ~45 s into each burn on one B2L (~2,100 m); never set on another B2L near sea level, even under the OEM controller. Leading theory: altitude compensation active. **Not a reliable flame signal** — the component uses D1=`0x09` (HEATING) for "flame". |
+| D2 bit 5 | Flag 0x20 (altitude compensation) | Almost certainly **altitude compensation active**: on a B2L at ~2,100 m the heater reads 793 hPa (UDS `FD36`) and has 286 h in altitude mode (`FD17` word 7); on a B2L near sea level (~1017 hPa) the counter is 0 h and the flag never appears, even under the OEM controller. The flag comes on during pre-glow, before flame detection, and clears at shutdown. **Not a flame signal** — the component uses D1=`0x09` (HEATING) for "flame". |
 | D2 | Fault flag | `0x08` when D1=0x0B (fault active) |
 | D3 | Fault code | Non-zero during fault and for ~26s post-fault in IDLE. See fault code table below. |
 | D5–D6 | Temperature (previously "echo" / "counter") | 16-bit LE, **(°C + 50) × 10** (650 = 15.0 °C). While heating: the room temperature the controller sends in 0x54 D5/D6, which the heater regulates on. When idle or in fault: the heater's own value = its intake air sensor minus 3.0 K. Unit confirmed via UDS `FD45`, see [uds-diagnostics.md](uds-diagnostics.md). |
@@ -75,12 +75,12 @@
 |---|---|
 | `0x00` | No flame yet |
 | `0x08` | Intermediate / transition |
-| `0x20` | Flag 0x20 set — meaning unconfirmed (see D2 bit 5 above); not seen on every heater |
+| `0x20` | Flag 0x20 set — altitude compensation active (see D2 bit 5 above); only seen at altitude |
 
 **Quick decode:**
 ```python
 state = msg[0]         # 0x09=heating, 0x21=fan, 0x03=idle, 0x02=startup, 0x0B=fault
-burning = msg[0] == 0x09  # HEATING; msg[1] & 0x20 is an unconfirmed flag, not a flame signal
+burning = msg[0] == 0x09  # HEATING; msg[1] & 0x20 = altitude compensation, not a flame signal
 fault_code = msg[2]    # non-zero during fault (and ~26s post-fault): 0x20=flame, 0x40=overtemp
 ```
 

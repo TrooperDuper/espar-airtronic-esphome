@@ -54,6 +54,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Status LED migrated from deprecated `neopixelbus` to `esp32_rmt_led_strip`.
 
 ### Documentation
+- **0x2C4 D2 bit 5 (flag 0x20) = altitude compensation active.** On a B2L at ~2,100 m the heater reads 793 hPa (FD36) with 286 h in altitude mode (FD17); a sea-level B2L reads ~1017 hPa with 0 h and never sets the flag. It comes on during pre-glow, before flame detection.
+- README *Regulation*: after a run the heater's own (intake) sensor reads ~15 K high for 30+ min from residual heat.
+- The Remote+ and Select use LIN, not CAN; the open multi-controller case is two CAN controllers (two Pros, or Pro + EasyStart Web) (thanks @rhd944dot1).
 - **P000342 is "invalid configuration: too many CAN units"**, per Eberspächer's Hydronic S3 repair instructions (via [@farnham26](https://github.com/farnham26)). This refines the P000342 entry under Changed above: ADR is the dangerous-goods mode, not a bus address, and the fault means more than one control unit on the bus. One controller at a time (on a Hydronic, the EasyStart answered another controller's frames with "off").
 - 0x2C4 / 0x54 D5–D6 relabeled as a likely temperature echo (previously "counter"); no behavior change.
 - 0x60D D3–D5 documented as a likely controller ID/serial.
