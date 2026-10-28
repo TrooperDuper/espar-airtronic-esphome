@@ -435,7 +435,10 @@ void EsparCanComponent::parse_0x2C4_(const twai_message_t &msg) {
 
   // Cooldown / after-run: IDLE with D2 bit3 (0x08) set and no fault code.
   // Seen for ~4 min after heating while the blower purges, then D2 -> 0x00.
-  bool new_cooldown = (new_state == HEATER_STATE_IDLE) && (new_sub & 0x08)
+  // D1=0x01 is a one-frame transition at the start/end of the after-run; it
+  // counts as cooldown so the state doesn't blink UNKNOWN.
+  bool new_cooldown = ((new_state == HEATER_STATE_IDLE && (new_sub & 0x08)) ||
+                       new_state == HEATER_STATE_STOPPING)
                       && (new_fault_code == HEATER_FAULT_NONE);
 
   // While the heater idles and nothing is commanded, D5/D6 is its own room

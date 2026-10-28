@@ -49,7 +49,7 @@
 
 | Value | State | Notes |
 |---|---|---|
-| `0x01` | (unmapped) | Seen for a single frame at the end of cooldown on another B2L. Meaning unknown; the component reports it as UNKNOWN. |
+| `0x01` | Stopping (transition) | A single frame around the after-run: right after IDLE is commanded (raw D1–D4 `01 20 00 00`, COOLDOWN ~0.2 s later; B2L at ~2,100 m) and at the end of cooldown (B2L near sea level). The component reports it as COOLDOWN. |
 | `0x02` | STARTUP | Initializing / pre-heat |
 | `0x03` | IDLE | Off — standby |
 | `0x08` | INIT | Seen briefly at first contact |
