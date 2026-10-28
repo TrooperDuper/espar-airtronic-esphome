@@ -50,7 +50,7 @@ Config options (see CONFIG_SCHEMA below):
 
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome.components import climate, sensor, binary_sensor, text_sensor
+from esphome.components import climate, sensor, binary_sensor, text_sensor, ota
 from esphome.const import (
     CONF_ID,
     CONF_UPDATE_INTERVAL,
@@ -93,6 +93,7 @@ CONF_ROOM_SENSOR                = "room_sensor"
 CONF_MAX_RUN_TIME               = "max_run_time"
 CONF_CONTROLLER_ID              = "controller_id"
 CONF_AUTO_CLEAR_IDLE_LOCK       = "auto_clear_idle_lock"
+CONF_OTA_SAFE_STOP              = "ota_safe_stop"
 CONF_INIT_0X62_BYTE             = "init_0x62_byte"
 CONF_HEATER_STATE               = "heater_state"
 CONF_FLAME_ACTIVE               = "flame_active"
@@ -263,6 +264,10 @@ CONFIG_SCHEMA = (
             # After a power interruption the heater sits in IDLE with D3≠0 and
             # ignores commands. When true, send a FAN→IDLE pulse to release it.
             cv.Optional(CONF_AUTO_CLEAR_IDLE_LOCK, default=True): cv.boolean,
+            # An OTA update while the heater is busy: stop it the normal way and
+            # keep the bus alive until the reboot, so it stores no P000307/P000440.
+            # Needs an ota: block (without one it does nothing). Issue #27.
+            cv.Optional(CONF_OTA_SAFE_STOP, default=True): cv.boolean,
             **{cv.Optional(k): cv.invalid(f"{k}: {_REMOVED}") for k in REMOVED_OPTIONS},
             # Optional entity outputs
             cv.Optional(CONF_HEATER_STATE):     text_sensor.text_sensor_schema(),
@@ -292,6 +297,9 @@ async def to_code(config):
     cg.add(var.set_controller_id(config[CONF_CONTROLLER_ID]))
     cg.add(var.set_init_0x62_byte(config[CONF_INIT_0X62_BYTE]))
     cg.add(var.set_auto_clear_idle_lock(config[CONF_AUTO_CLEAR_IDLE_LOCK]))
+    cg.add(var.set_ota_safe_stop(config[CONF_OTA_SAFE_STOP]))
+    if config[CONF_OTA_SAFE_STOP]:
+        ota.request_ota_state_listeners()  # compiled in only when an ota: block exists
 
     if CONF_CURRENT_TEMPERATURE_SENSOR in config:
         sens = await cg.get_variable(config[CONF_CURRENT_TEMPERATURE_SENSOR])

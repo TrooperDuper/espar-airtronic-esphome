@@ -53,6 +53,10 @@
 #include "esphome/components/binary_sensor/binary_sensor.h"
 #include "esphome/components/text_sensor/text_sensor.h"
 #include "driver/twai.h"
+#ifdef USE_OTA_STATE_LISTENER
+#include "esphome/components/ota/ota_backend.h"
+#endif
+#include <atomic>
 
 namespace esphome {
 namespace espar_can {
@@ -155,7 +159,11 @@ static constexpr gpio_num_t CAN_TX_PIN = GPIO_NUM_27;
 static constexpr gpio_num_t CAN_RX_PIN = GPIO_NUM_26;
 
 
-class EsparCanComponent : public climate::Climate, public Component {
+class EsparCanComponent : public climate::Climate,
+#ifdef USE_OTA_STATE_LISTENER
+                          public ota::OTAGlobalStateListener,
+#endif
+                          public Component {
  public:
   // ── ESPHome lifecycle ─────────────────────────────────────────────────
   void setup() override;
@@ -170,6 +178,13 @@ class EsparCanComponent : public climate::Climate, public Component {
   // ── Setters called from generated __init__.py code ────────────────────
   void set_cabin_temp_fahrenheit(bool f)                    { cabin_temp_fahrenheit_ = f; }
   void set_auto_clear_idle_lock(bool b)                     { auto_clear_idle_lock_ = b; }
+  void set_ota_safe_stop(bool b)                            { ota_safe_stop_ = b; }
+#ifdef USE_OTA_STATE_LISTENER
+  // OTA update starting: stop the heater cleanly and keep the bus alive
+  // until the reboot (the upload blocks the main loop). Issue #27.
+  void on_ota_global_state(ota::OTAState state, float progress, uint8_t error,
+                           ota::OTAComponent *comp) override;
+#endif
   void set_tx_standby(bool s);
   // Which room temperature the heater regulates on. Can be changed at run time,
   // e.g. from a template select:  - lambda: id(espar).set_room_sensor_controller(x == "External");
@@ -328,6 +343,13 @@ class EsparCanComponent : public climate::Climate, public Component {
   // Use when a real EasyStart Pro is on the bus: the WeAct emulates the Pro's
   // CAN IDs; both transmitting has been seen to trigger P000342.
   bool  tx_standby_{false};
+  // OTA safe stop (#27): a FreeRTOS task sends heartbeat + IDLE while the
+  // OTA upload blocks the main loop; the main loop's own TX pauses meanwhile.
+  bool  ota_safe_stop_{true};
+  std::atomic<bool> ota_keepalive_active_{false};
+  std::atomic<bool> ota_keepalive_stop_{false};
+  uint8_t ota_room_lo_{0xFE}, ota_room_hi_{0xFF};  // room word frozen at OTA start
+  static void ota_keepalive_task_(void *arg);
   // true = report current_temperature_sensor as the control unit's room sensor;
   // false = hand back the heater's own sensor.
   bool  room_sensor_controller_{false};

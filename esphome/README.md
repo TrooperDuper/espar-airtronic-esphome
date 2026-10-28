@@ -110,7 +110,7 @@ First flash must be via USB:
 esphome run espar-heater.yaml
 ```
 
-Subsequent updates can be OTA.
+Subsequent updates can be OTA. If the heater is running when an OTA update starts, the component stops it the normal way (it runs its usual cooldown) and keeps talking to it until the WeAct reboots, so the heater doesn't log controller-lost faults (P000307/P000440). The climate entity comes back as Off; turn it back on afterwards. Set `ota_safe_stop: false` to turn this off. Details: [#27](https://github.com/TrooperDuper/espar-airtronic-esphome/issues/27).
 
 ---
 
@@ -152,6 +152,10 @@ espar_can:
                                         # often sits in IDLE with fault byte D3=0x04 and ignores
                                         # HEAT/FAN. When true, the component releases it (45 s wait,
                                         # FAN 6 s, IDLE 5 s, up to 3 tries). See docs/fault-codes.md.
+
+  ota_safe_stop: true                   # default true; needs an ota: block. An OTA update while the
+                                        # heater is busy stops it normally and keeps the bus alive until
+                                        # the reboot (no P000307/P000440). Climate comes back Off. #27
 
   controller_id: 0x82B609               # optional; 24-bit ID sent in 0x60D D3–D5 (default shown)
   init_0x62_byte: 0xF1                  # optional; last byte of init frame 0x62 (default shown)

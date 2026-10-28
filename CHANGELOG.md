@@ -8,6 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **OTA update while the heater runs** ([#27](https://github.com/TrooperDuper/espar-airtronic-esphome/issues/27)). The upload blocks the main loop for ~20–30 s; a busy heater that loses its controller for more than ~15 s ends the run by itself and stores P000307 + P000440 (measured by [@farnham26](https://github.com/farnham26) on a Hydronic S3). Now, when an OTA starts with the heater busy, the component commands IDLE (a normal stop with cooldown) and a small task keeps sending the heartbeat and the IDLE command group until the reboot. The climate entity comes back as Off. New option `ota_safe_stop` (default `true`, needs an `ota:` block); nothing changes when the heater is idle or in CAN standby, or when another controller is on the bus.
+
 ---
 
 ## [2.0.0] — 2026-10-28
