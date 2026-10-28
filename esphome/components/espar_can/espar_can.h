@@ -64,6 +64,10 @@ static constexpr uint8_t HEATER_STATE_INIT    = 0x08;   // brief transition (1-2
 static constexpr uint8_t HEATER_STATE_HEATING = 0x09;
 static constexpr uint8_t HEATER_STATE_FAULT   = 0x0B;   // confirmed via RE captures
 static constexpr uint8_t HEATER_STATE_FAN     = 0x21;
+// Single-frame transition around the after-run: seen right after IDLE is commanded
+// (D1-D4 01 20 00 00, then COOLDOWN 0.2 s later) and at the end of cooldown.
+// Reported as COOLDOWN so Heater State doesn't blink UNKNOWN.
+static constexpr uint8_t HEATER_STATE_STOPPING = 0x01;
 
 // ── D3 fault code bits (0x2C4 byte index 2) ─────────────────────────────
 static constexpr uint8_t HEATER_FAULT_NONE     = 0x00;

@@ -8,6 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed (after #19)
+- *Espar Heater State* no longer blinks `UNKNOWN` for one frame when the heater stops: 0x2C4 D1 = `0x01` (seen right after IDLE is commanded, raw `01 20 00 00`, and at the end of cooldown) is reported as `COOLDOWN`.
+
 ### ⚠️ Breaking — the heater regulates (#9)
 - **The heater regulates itself, always:** in HEAT the climate target goes to the heater as its setpoint together with a real room temperature in 0x54 D5/D6 ((°C + 50) × 10), and the heater starts, modulates, pauses and restarts by itself, like with the OEM EasyStart Pro. The component no longer switches the heater on and off, so there is no short-cycling (no full cooldown and new glow-plug ignition at every setpoint crossing). Tested on an Airtronic S3 B2L, incl. a 55 min run (docs/experiments/heater-regulation.md).
 - **Removed:** the component's own thermostat and its options `heat_setpoint_f`, `pause_mode`, `hysteresis`, `min_run_time`, `min_off_time`, `max_starts_per_hour` (the last four were added after #14 and never released). A config that still sets one of them fails validation with a message saying so — delete the option. The heat-confirm timeout is gone too: in its control pause the heater rightly doesn't heat.
