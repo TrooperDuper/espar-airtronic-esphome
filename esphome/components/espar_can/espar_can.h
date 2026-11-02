@@ -109,7 +109,9 @@ static constexpr uint32_t DIAG_IDLE_INTERVAL_MS  = 60000;  // sweep period while
 static constexpr uint32_t DIAG_HOURS_INTERVAL_MS = 60000;  // FD17 counters move once a minute
 static constexpr uint8_t  DIAG_MAX_TIMEOUTS      =    10;  // consecutive → fall back to the idle period
 static constexpr uint8_t  DIAG_PAD               =  0xAA;
-static constexpr size_t   DIAG_BUF_SIZE          =    64;  // longest polled answer is 31 bytes
+static constexpr size_t   DIAG_BUF_SIZE          =   255;  // longest polled answer is 31 bytes; DTC records can be longer
+static constexpr uint8_t  DIAG_PROBE             =  0xFE;  // diag_pending_: a DTC-details probe request (#28)
+static constexpr uint8_t  PROBE_MAX_DTCS         =    16;
 static constexpr uint8_t  UDS_READ_DATA          =  0x22;  // ReadDataByIdentifier
 static constexpr uint8_t  UDS_READ_DTC           =  0x19;  // ReadDTCInformation
 static constexpr uint16_t BLOWER_LEVEL_OFFSET    = 20000;  // FD08 reads 20000 with the blower stopped
@@ -247,6 +249,10 @@ class EsparCanComponent : public climate::Climate,
   // Read the heater's fault memory now (also done on connect, on a fault and after
   // each run). Callable from YAML:  - lambda: id(espar).read_fault_memory();
   void read_fault_memory() { diag_fault_read_requested_ = true; diag_sweep_requested_ = true; }
+  // #28 probe (temporary): for every stored code, ask 19 04 <DTC> FF (snapshot records) and
+  // 19 06 <DTC> FF (extended data, e.g. occurrence counter / hours), plus 19 03 once, and log
+  // the raw answers. Read-only. Callable from YAML:  - lambda: id(espar).probe_dtc_details();
+  void probe_dtc_details();
 
  protected:
   // ── TX helpers ────────────────────────────────────────────────────────
@@ -459,6 +465,16 @@ class EsparCanComponent : public climate::Climate,
   uint16_t diag_len_{0};
   uint16_t diag_expected_{0};
   uint8_t  diag_next_seq_{0};
+  // #28 DTC-details probe
+  bool     probe_requested_{false};
+  bool     probe_active_{false};
+  bool     probe_dtcs_known_{false};    // fault memory read since boot
+  uint8_t  probe_step_{0};
+  uint8_t  probe_dtc_count_{0};
+  uint8_t  probe_dtcs_[PROBE_MAX_DTCS][3];
+  char     probe_label_[32]{};          // what the request in flight was, for the log
+  void probe_send_next_();
+  void probe_process_(const uint8_t *data, uint16_t len);
 };
 
 }  // namespace espar_can

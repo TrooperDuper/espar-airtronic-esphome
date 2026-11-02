@@ -689,11 +689,36 @@ void EsparCanComponent::handle_diagnostics_(uint32_t now) {
     if ((now - t_diag_request_) < DIAG_TIMEOUT_MS) return;
     diag_waiting_ = false;
     t_diag_done_  = now;
-    ESP_LOGD(TAG, "Diagnostics: no answer to %02X %04X",
-             diag_pending_ == DIAG_FAULT_MEMORY ? UDS_READ_DTC : UDS_READ_DATA, DIAG_DIDS[diag_pending_]);
+    if (diag_pending_ == DIAG_PROBE)
+      ESP_LOGI(TAG, "DTC probe %s: no answer", probe_label_);
+    else
+      ESP_LOGD(TAG, "Diagnostics: no answer to %02X %04X",
+               diag_pending_ == DIAG_FAULT_MEMORY ? UDS_READ_DTC : UDS_READ_DATA, DIAG_DIDS[diag_pending_]);
     if (diag_timeouts_ < DIAG_MAX_TIMEOUTS && ++diag_timeouts_ == DIAG_MAX_TIMEOUTS)
       ESP_LOGW(TAG, "Diagnostics: heater does not answer on 0x%03lX — retrying once a minute",
                (unsigned long) DIAG_RESPONSE_ID);
+  }
+
+  // #28 probe: needs the stored codes first, then runs ahead of the sweep
+  if (probe_requested_ && !probe_active_) {
+    if (!probe_dtcs_known_) {
+      if (!fault_memory_sensor_) {
+        ESP_LOGW(TAG, "DTC probe needs diagnostics: fault_memory: in the config");
+        probe_requested_ = false;
+      } else if (!diag_fault_read_requested_) {
+        read_fault_memory();
+      }
+    } else {
+      probe_requested_ = false;
+      probe_active_    = true;
+      probe_step_      = 0;
+      ESP_LOGI(TAG, "DTC probe: start, %u stored code(s)", probe_dtc_count_);
+    }
+  }
+  if (probe_active_) {
+    if ((now - t_diag_done_) < DIAG_GAP_MS) return;
+    probe_send_next_();
+    return;
   }
 
   if (!diag_sweep_active_) {
@@ -749,7 +774,10 @@ void EsparCanComponent::handle_diag_frame_(const twai_message_t &msg) {
     case 0x1: {  // first frame — ask for the rest
       diag_expected_ = (static_cast<uint16_t>(b[0] & 0x0F) << 8) | b[1];
       if (diag_expected_ > DIAG_BUF_SIZE || dlc < 8) {
-        ESP_LOGW(TAG, "Diagnostics: answer to %04X too long (%u bytes)", DIAG_DIDS[diag_pending_], diag_expected_);
+        if (diag_pending_ == DIAG_PROBE)
+          ESP_LOGW(TAG, "DTC probe %s: answer too long (%u bytes)", probe_label_, diag_expected_);
+        else
+          ESP_LOGW(TAG, "Diagnostics: answer to %04X too long (%u bytes)", DIAG_DIDS[diag_pending_], diag_expected_);
         diag_waiting_ = false;
         t_diag_done_  = millis();
         return;
@@ -779,6 +807,7 @@ void EsparCanComponent::handle_diag_frame_(const twai_message_t &msg) {
 // data = UDS payload: [62][DID hi][DID lo][values...]  or  [59][02][mask][DTCs...]  or  [7F][SID][NRC]
 // Bytes after the length announced by ISO-TP are leftovers from the heater's buffer.
 void EsparCanComponent::diag_process_response_(const uint8_t *data, uint16_t len) {
+  if (diag_pending_ == DIAG_PROBE) { probe_process_(data, len); return; }
   uint16_t did = DIAG_DIDS[diag_pending_];
   uint8_t  sid = (diag_pending_ == DIAG_FAULT_MEMORY) ? UDS_READ_DTC : UDS_READ_DATA;
 
@@ -993,6 +1022,10 @@ void EsparCanComponent::diag_process_response_(const uint8_t *data, uint16_t len
     case DIAG_FAULT_MEMORY: {
       // 4 bytes per entry: 3 bytes code (00 01 15 → P000115), 1 byte status (bit0 = active now)
       diag_fault_read_requested_ = false;
+      probe_dtc_count_ = 0;
+      for (uint16_t i = 0; i + 4 <= n && probe_dtc_count_ < PROBE_MAX_DTCS; i += 4, probe_dtc_count_++)
+        for (int k = 0; k < 3; k++) probe_dtcs_[probe_dtc_count_][k] = v[i + k];
+      probe_dtcs_known_ = true;
       if (!fault_memory_sensor_) break;
       std::string list;
       for (uint16_t i = 0; i + 4 <= n; i += 4) {
@@ -1008,6 +1041,69 @@ void EsparCanComponent::diag_process_response_(const uint8_t *data, uint16_t len
 
     default:
       break;
+  }
+}
+
+// =============================================================================
+// #28 DTC-DETAILS PROBE (temporary, read-only)
+// =============================================================================
+// Order: 19 03 (which snapshot records exist), then per stored code
+// 19 04 <DTC> FF (all snapshot records) and 19 06 <DTC> FF (all extended data).
+// Every answer is logged raw; decoding comes once we've seen what the Airtronic sends.
+
+void EsparCanComponent::probe_dtc_details() {
+  if (!diag_enabled_) {
+    ESP_LOGW(TAG, "DTC probe needs a diagnostics: block");
+    return;
+  }
+  probe_requested_  = true;
+  probe_dtcs_known_ = false;   // read the stored codes fresh
+}
+
+void EsparCanComponent::probe_send_next_() {
+  uint8_t d[8] = {DIAG_PAD, DIAG_PAD, DIAG_PAD, DIAG_PAD, DIAG_PAD, DIAG_PAD, DIAG_PAD, DIAG_PAD};
+  if (probe_step_ == 0) {
+    d[0] = 0x02; d[1] = UDS_READ_DTC; d[2] = 0x03;
+    snprintf(probe_label_, sizeof(probe_label_), "19 03");
+  } else {
+    uint8_t k = (probe_step_ - 1) / 2;
+    if (k >= probe_dtc_count_) {
+      probe_active_ = false;
+      ESP_LOGI(TAG, "DTC probe: done");
+      return;
+    }
+    uint8_t sub = ((probe_step_ - 1) % 2 == 0) ? 0x04 : 0x06;
+    const uint8_t *c = probe_dtcs_[k];
+    d[0] = 0x06; d[1] = UDS_READ_DTC; d[2] = sub; d[3] = c[0]; d[4] = c[1]; d[5] = c[2]; d[6] = 0xFF;
+    snprintf(probe_label_, sizeof(probe_label_), "19 %02X P%02X%02X%02X FF", sub, c[0], c[1], c[2]);
+  }
+  probe_step_++;
+  send_frame_(DIAG_REQUEST_ID, d, 8);
+  diag_pending_   = DIAG_PROBE;
+  diag_waiting_   = true;
+  diag_expected_  = 0;
+  diag_len_       = 0;
+  t_diag_request_ = millis();
+}
+
+void EsparCanComponent::probe_process_(const uint8_t *data, uint16_t len) {
+  if (len >= 3 && data[0] == 0x7F && data[1] == UDS_READ_DTC && data[2] == 0x78) {
+    t_diag_request_ = millis();   // response pending: wait another timeout
+    return;
+  }
+  diag_waiting_ = false;
+  t_diag_done_  = millis();
+  if (len >= 3 && data[0] == 0x7F) {
+    ESP_LOGI(TAG, "DTC probe %s: rejected, NRC 0x%02X", probe_label_, data[2]);
+    return;
+  }
+  ESP_LOGI(TAG, "DTC probe %s: %u bytes", probe_label_, len);
+  // 24 bytes per line keeps each log line short
+  for (uint16_t off = 0; off < len; off += 24) {
+    char hex[24 * 3 + 1];
+    size_t p = 0;
+    for (uint16_t i = off; i < len && i < off + 24; i++) p += snprintf(hex + p, sizeof(hex) - p, "%02X ", data[i]);
+    ESP_LOGI(TAG, "  [%3u] %s", off, hex);
   }
 }
 
